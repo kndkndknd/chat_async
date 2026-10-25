@@ -16,12 +16,8 @@ if (fs.existsSync(dotenvPath)) {
 import { cmdLogging } from "./logging/cmdLogging";
 import { initStreams } from "./data";
 import { loadAllStates, clientState, sampleRateState } from "./state";
-import { ioState } from "./state/states/ioState";
-import { countersRedis, streamsRedis } from "./redis/streamsRedis";
-import {
-  nightScheduleState,
-  startNightSchedule,
-} from "./scenario/nightSchedule";
+import { streamsRedis } from "./redis/streamsRedis";
+import { startNightSchedule } from "./scenario/nightSchedule";
 import { getMongoDb } from "./mongo/client";
 import {
   importStreamToMongo,
@@ -177,27 +173,6 @@ app.post("/api/char", function (req, res, next) {
   console.log("POST /api/char", req.body);
   console.log("ip:", req.ip);
   res.json({ success: true, message: "char received" });
-});
-
-app.post("/api/persondetect", function (req, res) {
-  const body: { type: string; direction: string } = req.body;
-  console.log(JSON.parse(JSON.stringify(body)));
-  if (nightScheduleState.quiet) {
-    res.json({ success: true, skipped: true });
-    return;
-  }
-  ioState.io?.emit("personDetectFromServer");
-  if (body.direction === "left") {
-    countersRedis.increment("visitor").then((count) => {
-      console.log("visitor count:", count);
-    });
-  }
-  if (body.direction === "right") {
-    countersRedis.increment("leave").then((count) => {
-      console.log("leave count:", count);
-    });
-  }
-  res.json({ success: true });
 });
 
 // シナリオ（scenarioItsuki）を HTTP から起動する。

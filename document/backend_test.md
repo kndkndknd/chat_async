@@ -90,7 +90,7 @@ pnpm -F backend exec vitest run
 
 | テストファイル | 対象関数 | ソース | ケース内容 |
 |---|---|---|---|
-| `test/clientSetting/clientSettingsEmit/buildPayload.test.ts` | `buildPayload` | `src/clientSetting/clientSettingsEmit.ts` | client なし → null / facedetection が AND で算出 / personDetectState.flag=false で false / hanged そのまま |
+| `test/clientSetting/clientSettingsEmit/buildPayload.test.ts` | `buildPayload` | `src/clientSetting/clientSettingsEmit.ts` | client なし → null / `facedetection` をそのまま返す / `facedetection:false` / `hanged` そのまま |
 | `test/clientSetting/connectFromClient.test.ts` | `connectFromClient` | `src/clientSetting/connectFromClient.ts` | /nosound 早期 return / /1 で facedetection client 登録 / /3 で hanged / clientMode='client' /project / clientMode='noStream' / clientMode='arduinoClient' / urlPathName 'pi' で arduinoState.host 設定 |
 | `test/clientSetting/floatingPosition.test.ts` | `floatingPosition` | `src/clientSetting/floatingPosition.ts` | 既存 client は自分の position / projection 0 件 default / 非 projection 1 件 case 1 / projection あり時の基準 |
 | `test/cmd/charProcess.test.ts` | `charProcess` | `src/cmd/charProcess.ts` | Enter で空文字 / ArrowUp で getLogCmd 戻り値 / Backspace で末尾削除 / Tab・ArrowRight で空文字 / Escape / 通常文字連結 / BASS で previousState 更新 / Shift で変化なし |
