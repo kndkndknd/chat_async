@@ -11,7 +11,7 @@ export type ImportStreamResult = {
   skipped: number;
 };
 
-// flushStreams.ts と同じマッピング: Redis に保存された生 JSON を Mongo ドキュメントへ変換する。
+// Redis に保存された生 JSON を Mongo ドキュメントへ変換する。
 const rawToDoc = (raw: string) => {
   const obj = JSON.parse(raw);
   return {

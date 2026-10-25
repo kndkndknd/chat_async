@@ -3,7 +3,7 @@
 `face-api.js` を用いたフロント側のリアルタイム顔検出と、検出をトリガーにしたバックエンドの `faceDetectScenario` の実装説明。
 
 > 旧 `personDetectState` と `POST /api/persondetect` による起動方式は廃止済み。
-> 現在は「接続時の URL パス」と「ナイトモード」で顔検出の有効・無効が決まる。
+> 現在は「接続時の URL パス」で顔検出の有効・無効が決まる。
 >
 > 本実装は個人を識別する顔認証ではなく、顔の位置・68点ランドマーク・正面度を検出するだけの仕組み。
 > 顔の埋め込み特徴量や `FaceMatcher` は使っていない。
@@ -62,8 +62,7 @@ face-api.js                                 wsServer.ts
 `wsServer.ts:74-85` の流れ:
 
 1. `connectFromClient()` がクライアント状態を作る
-2. `applyNightModeToClient()` がナイトモード中なら `facedetection` を `false` に上書き
-3. `emitClientSettings()` が `clientSettingsFromServer` を送る
+2. `emitClientSettings()` が `clientSettingsFromServer` を送る
 
 ```json
 {
@@ -77,16 +76,6 @@ face-api.js                                 wsServer.ts
 
 フロントは `socket.ts` の `clientSettingsFromServer` ハンドラでこのイベントを受け、`true` なら `initFaceDetection()`、`false` なら `stopFaceDetection()` を呼ぶ。
 
-### ナイトモード
-
-`nightMode.ts` はナイトモードの ON/OFF で全端末の顔検出を停止・復元する。
-
-- **ON**: 各端末の元の `facedetection` を `savedFaceDetection` に保存し、`false` にして `broadcastClientSettings()` で配信する。
-- **OFF**: 保存した値に戻して `broadcastClientSettings()` で配信する。
-- ナイトモード中に新規接続した端末は `applyNightModeToClient()` で `false` にし、解除時に復元する。
-
-自動スケジュールは `nightModeSchedule.ts` が担当する（月曜以外の 19:00 ON / 翌 11:00 OFF）。
-
 ### 廃止された起動方式
 
 以前の `POST /api/persondetect` は `app.ts` から削除した。現在は以下が存在しない。
@@ -96,7 +85,7 @@ face-api.js                                 wsServer.ts
 - `countersRedis.increment("visitor")` / `countersRedis.increment("leave")`
 - `personDetectFromServer` の送信
 
-外部センサーが `/api/persondetect` を呼んでも、現在は 404 になる。顔検出を開始・停止したい場合は、ナイトモード API か接続時のパス設定を使う。
+外部センサーが `/api/persondetect` を呼んでも、現在は 404 になる。顔検出を開始・停止したい場合は、接続時のパス設定を使う。
 
 ---
 
@@ -380,7 +369,6 @@ setTimeout(async () => {
 送信タイミング:
 
 - クライアント接続時（`connectFromClient` 成功直後）
-- ナイトモードの ON/OFF 時
 
 `facedetection` は `clientState.client[id].facedetection` をそのまま返す。旧実装のような `personDetectState.flag` との AND はない。
 
@@ -449,8 +437,6 @@ setTimeout(async () => {
 - `packages/backend/src/scenario/faceDetectScenario.json` — シナリオ定義
 - `packages/backend/src/clientSetting/connectFromClient.ts` — パスによる `facedetection` 決定
 - `packages/backend/src/clientSetting/clientSettingsEmit.ts` — 設定送信
-- `packages/backend/src/nightMode/nightMode.ts` — ナイトモードによる停止・復元
-- `packages/backend/src/nightMode/nightModeSchedule.ts` — ナイトモード自動スケジュール
 - `packages/backend/src/redis/streamsRedis.ts` — カウンタ・バッファ検索
 - `packages/backend/src/stream/recordEmit.ts` — PLAYBACK 録画要求
 - `packages/backend/static/models/` — 本番配信用モデル
