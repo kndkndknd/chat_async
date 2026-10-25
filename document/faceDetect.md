@@ -1,157 +1,365 @@
-# 顔認識（face-api.js）実装ドキュメント
+# 顔検出（face-api.js）実装ドキュメント
 
-`face-api.js` を用いたフロント側のリアルタイム顔検出と、バックエンドからの起動制御の実装説明。
+`face-api.js` を用いたフロント側のリアルタイム顔検出と、検出をトリガーにしたバックエンドの `faceDetectScenario` の実装説明。
+
+> 旧 `personDetectState` と `POST /api/persondetect` による起動方式は廃止済み。
+> 現在は「接続時の URL パス」と「ナイトモード」で顔検出の有効・無効が決まる。
+>
+> 本実装は個人を識別する顔認証ではなく、顔の位置・68点ランドマーク・正面度を検出するだけの仕組み。
+> 顔の埋め込み特徴量や `FaceMatcher` は使っていない。
 
 ---
 
 ## 全体アーキテクチャ
 
 ```
-【外部システム】           【バックエンド】                       【フロントエンド】
+【フロントエンド /1, /2 など】                【バックエンド】
 
-POST /api/persondetect      app.ts                                socket.ts
-{direction:"left"}    ──>     │                                     │
-                              ▼                                     │
-                    triggerLeftPersonDetect()                       │
-                              │                                     │
-                              │  15分タイマー管理                    │
-                              ▼                                     │
-                    personDetectState.flag                          │
-                              │                                     │
-                              │  flagの遷移時に再送                   │
-                              ▼                                     │
-                    broadcastClientSettings() ───────────────────>  │
-                                          clientSettingsFromServer  │
-                                                                    ▼
-                                                     initFaceDetection() / stopFaceDetection()
-                                                                    │
-                                                                    ▼
-                                                          face-api.js 検出ループ
-                                                                    │
-                                                                    │  faceDetectFromClient
-                              <──────────────────────────────────────┘
-                              │
-                              ▼
-                    PLAYBACK ストリーム再生（過去映像）
+face-api.js                                 wsServer.ts
+  detectAllFaces()                            │
+  250ms + 推論時間ごと                         │
+       │                                      │
+       │ 正面判定の false → true                │
+       └── faceDetectFromClient {x,width,height} ──>│
+                                                 ▼
+                                       countersRedis.increment("faceDetect")
+                                                 │
+                                                 ▼
+                                       faceDetectScenario(id)
+                                         ├─ stopEmit（全ストリーム停止）
+                                         ├─ CHAT ライブ配信の開始
+                                         ├─ recordEmit（10秒録画）
+                                         ├─ M5 回転
+                                         ├─ faceDetectBlockFromServer を全端末へ
+                                         ├─ recent PLAYBACK を検出端末で再生
+                                         ├─ 15秒後 today / yesterday を再生
+                                         └─ 40秒後 stopStream
 ```
-
----
-
-## モデルファイル
-
-`packages/frontend/public/models/`（および `packages/backend/static/models/`）に以下を配置:
-
-- `tiny_face_detector_model-*` — 顔検出
-- `face_landmark_68_tiny_model-*` — 68点ランドマーク
-- `face_expression_model-*` — 表情認識（現状ロードのみで未使用）
-
-URI は `MODEL_URL = "/models"`。Express の static 配信から取得する。
-
----
-
-## フロントエンド実装
-
-### `packages/frontend/src/faceApi/index.ts`
-
-#### モジュール状態
-
-```ts
-let overlayCanvas: HTMLCanvasElement | null = null;
-let active = false;
-let modelsLoaded = false;
-let lastDetectedAt: number | null = null;
-
-const MODEL_URL = "/models";
-const COOLDOWN = 30000; // 30秒
-```
-
-#### `initFaceDetection()`
-
-1. `active === true` なら早期 return（二重起動ガード）。
-2. 初回のみ 3 つのモデルを `Promise.all` で並列ロードし、`modelsLoaded = true`。
-3. `<canvas id="faceCanvas">` を生成し `#wrapper` に追加（`position:absolute; z-index:3; pointer-events:none`）。
-4. `active = true` にし、`detectLoop()` を開始。
-
-#### `detectLoop()`
-
-- `setTimeout(detectLoop, 100)` による疑似ループ（約 10fps）。
-- `video.readyState >= 2 && video.videoWidth > 0` のとき検出を実行:
-
-  ```ts
-  faceapi
-    .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
-    .withFaceLandmarks(true)
-    .withFaceExpressions();
-  ```
-
-- 結果を `window.innerWidth/innerHeight` にリサイズして描画。
-- 顔検出時:
-  - ランドマークを `drawFaceLandmarks` で描画。
-  - **クールダウン (`COOLDOWN = 30000ms`)** を経過していれば、最初の顔の `detection.box` から `{x, width, height}` を `faceDetectFromClient` イベントでサーバーへ送信し、`lastDetectedAt = now`。
-  - クールダウン中はサーバー送信せず描画のみ。
-
-#### `stopFaceDetection()`
-
-- `active = false` にしてループを終了させる。
-- `overlayCanvas` のコンテキストをクリアして残像を消す。
-- モデルとオーバーレイ要素は再起動高速化のため保持。
 
 ---
 
 ## 起動条件
 
-顔認識は以下 **両方** が `true` のときのみ起動する:
+### URL パスによる初期設定
 
-1. **クライアント条件**: バックエンドの `clientState.client[id].facedetection`
-   - `connectFromClient` での URL パス判定で決定（例: `/1`, `/2`, または `face` を含むパス）。
-2. **来訪フラグ**: `personDetectState.flag`
-   - `/api/persondetect` への `direction:"left"` POST により `true` になる時限フラグ。
+`connectFromClient.ts` が接続時の `urlPathName` を見て `clientState.client[id].facedetection` を決める。
 
-両条件の AND を `clientSettingsFromServer.facedetection` としてフロントに送り、フロントはそれだけを判断材料にする。
+| パス | `facedetection` | 備考 |
+|---|---|---|
+| `/1` | `true` | 顔検出端末 |
+| `/2` | `true` | 顔検出端末 |
+| `/3` | `false` | `hanged: true` |
+| `face` を含むパス | `true` | 汎用クライアント側の判定 |
+| `noStream` | `false` | ストリームなし端末 |
+| `/nosound` | クライアント登録なし | 早期 return |
+
+- `/1` `/2` `/3` は完全一致で判定する（`connectFromClient.ts:37-67`）。
+- それ以外のパスは `urlPathName.includes("face")` で判定する（`:142`, `:164`）。
+- `noStream` は常に `facedetection: false`（`:246`）。
+
+### 接続時の設定送信
+
+`wsServer.ts:74-85` の流れ:
+
+1. `connectFromClient()` がクライアント状態を作る
+2. `applyNightModeToClient()` がナイトモード中なら `facedetection` を `false` に上書き
+3. `emitClientSettings()` が `clientSettingsFromServer` を送る
+
+```json
+{
+  "type": "clientSettingsFromServer",
+  "data": {
+    "facedetection": true,
+    "hanged": false
+  }
+}
+```
+
+フロントは `socket.ts` の `clientSettingsFromServer` ハンドラでこのイベントを受け、`true` なら `initFaceDetection()`、`false` なら `stopFaceDetection()` を呼ぶ。
+
+### ナイトモード
+
+`nightMode.ts` はナイトモードの ON/OFF で全端末の顔検出を停止・復元する。
+
+- **ON**: 各端末の元の `facedetection` を `savedFaceDetection` に保存し、`false` にして `broadcastClientSettings()` で配信する。
+- **OFF**: 保存した値に戻して `broadcastClientSettings()` で配信する。
+- ナイトモード中に新規接続した端末は `applyNightModeToClient()` で `false` にし、解除時に復元する。
+
+自動スケジュールは `nightModeSchedule.ts` が担当する（月曜以外の 19:00 ON / 翌 11:00 OFF）。
+
+### 廃止された起動方式
+
+以前の `POST /api/persondetect` は `app.ts` から削除した。現在は以下が存在しない。
+
+- `personDetectState.flag` と 15 分タイマー
+- `triggerLeftPersonDetect()`
+- `countersRedis.increment("visitor")` / `countersRedis.increment("leave")`
+- `personDetectFromServer` の送信
+
+外部センサーが `/api/persondetect` を呼んでも、現在は 404 になる。顔検出を開始・停止したい場合は、ナイトモード API か接続時のパス設定を使う。
+
+---
+
+## フロントエンド実装
+
+実装本体は `packages/frontend/src/faceApi/index.ts`。
+
+### モデル
+
+`MODEL_URL = "/models"` から以下を初回だけ並列ロードする（`:126-135`）。
+
+| モデル | 用途 |
+|---|---|
+| `tinyFaceDetector` | 顔検出 |
+| `faceLandmark68TinyNet` | 68点ランドマーク |
+| `faceExpressionNet` | 表情認識（推論は実行するが、**結果は未使用**） |
+
+モデルファイルは以下に配置されている。
+
+- `packages/frontend/public/models/`
+- `packages/backend/static/models/`（本番の Express static 配信用）
+
+### `initFaceDetection()`
+
+1. `active === true` なら早期 return（二重起動ガード）。
+2. 未ロードなら 3 モデルを `Promise.all` でロード。
+3. `<canvas id="faceCanvas">` を `#wrapper` に追加（`position:absolute; z-index:3; pointer-events:none`）。
+4. `active = true` にして `detectLoop()` を開始。
+
+### `detectLoop()`
+
+- `setTimeout` による再帰ループ。間隔は **250ms + 推論時間**（`DETECT_INTERVAL_MS = 250`）。
+- 旧実装の 100ms から、WebRTC リレー映像への影響を減らすため 250ms に間引かれている。
+- `video.readyState >= 2 && video.videoWidth > 0` のときだけ検出する。
+
+```ts
+const detections = await faceapi
+  .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+  .withFaceLandmarks(true)
+  .withFaceExpressions();
+
+const resized = faceapi.resizeResults(detections, {
+  width: window.innerWidth,
+  height: window.innerHeight,
+});
+```
+
+- 検出結果は `window.innerWidth/innerHeight` にリサイズして描画する。
+- ランドマークは検出したすべての顔に対して描画する。
+- 正面判定とサーバー送信は **最初の顔 `resized[0]` だけ**を対象にする。
+
+### 正面判定
+
+68点ランドマークの以下を使う（`:195-206`）。
+
+- `positions[0]`: 左の顎輪郭
+- `positions[16]`: 右の顎輪郭
+- `positions[30]`: 鼻先
+
+```ts
+const faceCenterX = (leftJaw.x + rightJaw.x) / 2;
+const halfFaceWidth = (rightJaw.x - leftJaw.x) / 2;
+const frontalOffset = (noseTip.x - faceCenterX) / halfFaceWidth;
+```
+
+`Math.abs(frontalOffset) <= FRONTAL_RATIO`（0.4）なら正面とみなす。
+
+- 鼻先が顔の中心から半幅の 40% 以内、という判定。
+- 見ているのは左右方向（ヨー）だけ。上下（ピッチ）や傾き（ロール）は判定しない。
+- 複数人が映っている場合、2人目以降は正面判定の対象外。
+
+### 検出成立時
+
+`wasFrontal` の **false → true の立ち上がり時だけ**、以下を実行する（`:207-216`）。
+
+1. `faceDetectFromClient` を `{ x, width, height }` 付きで送信
+2. カメラ映像を1フレームだけ静止画として全画面表示（1秒間）
+3. 90秒間、白黒点滅を無効化
+
+```json
+{
+  "type": "faceDetectFromClient",
+  "data": { "x": 120, "width": 80, "height": 80 }
+}
+```
+
+`x / width / height` は `resizeResults` 後のウィンドウ座標。**サーバー側ではログに出すだけで、シナリオの判断には使っていない。**
+
+### 非正面時の点滅
+
+正面から外れている間は、画面全体を白黒で点滅させる（`:217-221`）。
+
+- `#faceFlash` を `position:fixed; z-index:9999; pointer-events:none` で全画面に重ねる。
+- 500ms ごとに白/黒を切り替える（1秒周期）。
+- 顔が検出されなくなったら点滅を止める。
+
+`flashDisabledUntil` は検出成立時に 90 秒後へ設定される。したがって、シナリオ起動後の 90 秒間は非正面でも点滅しない。
+
+### スナップショット
+
+`showCapturedFrame()` が `canvasElement.video` の1フレームを `#faceSnapshot` に描画する（`:38-74`）。
+
+- `position:fixed; inset:0; z-index:9998; background:#000`
+- アスペクト比を保って画面中央に contain 配置
+- `SNAPSHOT_DURATION_MS = 1000` 後に非表示
+- 再度検出成立した場合は前のタイマーを解除して再表示
+
+### ブロック
+
+`faceDetectBlockFromServer` を受けると `blockFaceDetection(durationMs)` が呼ばれ、`faceDetectBlockedUntil` まで検出処理をスキップする（`:86-93`, `:163-172`）。
+
+ブロック中は:
+
+- `detectAllFaces()` を実行しない
+- `faceDetectFromClient` を送らない
+- オーバーレイをクリアする
+- 点滅を止める
+- `wasFrontal = false` に戻す
+
+### `stopFaceDetection()`
+
+- `active = false` にしてループを止める
+- `wasFrontal = false`
+- 点滅を停止
+- スナップショットを非表示
+- オーバーレイをクリア
+- モデルと canvas は再起動高速化のため保持
 
 ---
 
 ## バックエンド実装
 
-### `state/states/personDetectState.ts`
+### `wsServer.ts`: `faceDetectFromClient`
 
 ```ts
-export const personDetectState: {
-  flag: boolean;
-  timeoutId: NodeJS.Timeout | null;
-} = {
-  flag: false,
-  timeoutId: null,
-};
-```
-
-メモリ上のみで永続化はしない（プロセス再起動でリセット）。
-
-### `clientSetting/clientSettingsEmit.ts`
-
-- **`emitClientSettings(id)`**: 単一クライアントへ `clientSettingsFromServer` を送信。
-  - ペイロード: `{ facedetection: c.facedetection && personDetectState.flag, hanged: c.hanged }`
-- **`broadcastClientSettings()`**: 全クライアントへ `emitClientSettings` を順に呼び出し。
-- **`triggerLeftPersonDetect()`**:
-  1. 既存の `personDetectState.timeoutId` を `clearTimeout`。
-  2. `personDetectState.flag = true`。
-  3. `setTimeout(..., 15 * 60 * 1000)` で 15 分後に `flag = false` にし `broadcastClientSettings()`。
-  4. `false → true` の遷移時のみ即座に `broadcastClientSettings()`（再 POST が連続した場合の冗長な再送を抑制）。
-
-### `app.ts: POST /api/persondetect`
-
-```ts
-if (body.direction === "left") {
-  triggerLeftPersonDetect();
-  countersRedis.increment("visitor")...
+case "faceDetectFromClient": {
+  const faceData = data as { x: number; width: number; height: number };
+  console.log("faceDetectFromClient", faceData);
+  countersRedis.increment("faceDetect").then((count) => {
+    console.log("faceDetect count:", count);
+  });
+  await faceDetectScenario(id);
+  break;
 }
 ```
 
-`direction:"right"` のときは `leave` カウンタの加算のみで、フラグは変更しない。
+- `counters:faceDetect` をインクリメントする。
+- `faceDetectScenario(id)` を実行する。
+- `faceData` はログのみで、座標は使わない。
 
-### `socket/wsServer.ts: connectFromClient`
+### `faceDetectScenario()`
 
-接続成立時に `connectFromClient` で `clientState.client[id]` を作成した後、`emitClientSettings(id)` を呼んで現在の有効値を送信する。
+実装は `packages/backend/src/scenario/faceDetectScenario.ts`。
+
+| タイミング | 処理 |
+|---|---|
+| t=0 | `stopEmit()` で全ストリーム停止 |
+| t=0 | 検出端末を CHAT の配信元にしてライブ配信を開始 |
+| t=0 | 検出端末へ 10 秒間の PLAYBACK 録画を指示（`recordEmit`） |
+| t=0 | M5 の回転を開始 |
+| t=0（recent 検索後） | `faceDetectBlockFromServer` を全端末へ送信 |
+| t=0（recent 検索後） | `recent` バッファを検出端末で再生 |
+| t=15s | `today` / `yesterday` バッファをランダムな端末で再生 |
+| t=40s | `stopStream()` で全ストリーム停止 |
+| t=60s | M5 の回転を停止 |
+
+#### CHAT ライブ配信
+
+```ts
+streamState.target.CHAT = detectedClientId
+  ? [detectedClientId]
+  : streamState.target.CHAT;
+currentState.stream.CHAT = true;
+
+if (detectedClientId) {
+  ioState.io?.to(detectedClientId).emit("chatReqFromServer");
+} else {
+  ioState.io?.emit("chatReqFromServer");
+}
+
+setTimeout(() => {
+  streamState.target.CHAT = Object.keys(clientState.client);
+}, 5000);
+```
+
+- 検出端末を CHAT の配信元にする。
+- 5 秒後に CHAT の target を接続中の全クライアントへ切り替える。
+- 40 秒後の `stopStream()` で停止する。
+
+#### PLAYBACK 録画
+
+`recordEmit(detectedClientId, false)` により、検出端末へ `recordReqFromServer` を送る。
+
+- `source: "PLAYBACK"`
+- `timeout: 10000`
+- `index`: 現在の `recordIndex`
+- `textPrint: false`（画面に RECORD を出さない）
+
+#### 再生バッファの選び方
+
+| 種別 | 条件 | 再生先 |
+|---|---|---|
+| `recent` | `PLAYBACK` の最大 `recordIndex` | 検出端末 |
+| `today` | 今日0時以降・`recent` を除く・1時間前に最も近い | ランダムな端末 |
+| `yesterday` | `scenarioItsuki` が Mongo から Redis にロードした `YESTERDAY` | ランダムな端末 |
+
+- `recent` は `checkRecentBuffer()` が `getRecordIndexEntries("PLAYBACK")` から最大 `recordIndex` を求める。
+- `today` は `checkTodayYesterdayBuffers()` が同じ一覧から選ぶ。
+- `yesterday` は `itsukiState.faceDetect.yesterdayLoaded` が `true` の場合だけ候補になる。
+- `yesterday` を有効にするには `scenarioItsuki` の `loadYesterdayPlayback()` が動いている必要がある。
+
+#### 顔検出ブロック
+
+`faceDetectScenario.json` の最大 `delayMs` に `FACE_DETECT_BLOCK_AFTER_MS`（20秒）を加えた時間を、全端末へ通知する。
+
+```
+blockDurationMs = max(step.delayMs) + 20,000ms
+```
+
+現在の JSON は `0ms` と `15,000ms` の2ステップなので、ブロックは **35秒**。
+
+```json
+{
+  "type": "faceDetectBlockFromServer",
+  "data": { "durationMs": 35000 }
+}
+```
+
+通知は `checkRecentBuffer()` の後に送られる。`recent` の検索が終わるまで他端末はブロックされない点に注意。
+
+#### M5 回転
+
+```ts
+void m5Test("rotation").then((rotationState) => {
+  void blinkM5Switch("rotation", rotationState, 50, 16);
+});
+setTimeout(async () => {
+  const rotationState = await m5Test("rotation");
+  if (rotationState) m5Switch("rotation", false);
+}, 60 * 1000);
+```
+
+- シナリオ開始時に回転を開始する。
+- 60 秒後に回転状態を確認し、ON なら停止する。
+
+#### `faceDetectScenario.json`
+
+```json
+{
+  "steps": [
+    {
+      "delayMs": 0,
+      "actions": [{ "type": "playFirstBuffer" }]
+    },
+    {
+      "delayMs": 15000,
+      "actions": [{ "type": "playRestBuffers" }]
+    }
+  ]
+}
+```
+
+`execStream` / `stopEmit` / `rotateItsuki` / `bpmChange` / `gridChange` のアクション種別は実装されているが、現在の JSON では未使用。
 
 ---
 
@@ -171,20 +379,10 @@ if (body.direction === "left") {
 
 送信タイミング:
 
-- クライアント接続成立直後（`connectFromClient` 成功時）。
-- `personDetectState.flag` が遷移したとき（false→true、true→false いずれも）。
+- クライアント接続時（`connectFromClient` 成功直後）
+- ナイトモードの ON/OFF 時
 
-フロントの `socket.ts` ハンドラ:
-
-```ts
-socketState.socket.on("clientSettingsFromServer", (data) => {
-  if (data?.facedetection) {
-    initFaceDetection().catch(...);
-  } else {
-    stopFaceDetection();
-  }
-});
-```
+`facedetection` は `clientState.client[id].facedetection` をそのまま返す。旧実装のような `personDetectState.flag` との AND はない。
 
 ### クライアント → サーバー: `faceDetectFromClient`
 
@@ -195,88 +393,64 @@ socketState.socket.on("clientSettingsFromServer", (data) => {
 }
 ```
 
-`detection.box` の `x / width / height` のみ送信（`y` は送っていない）。
+- 正面判定の立ち上がり時だけ送信する。
+- `y` は送らない。
+- サーバーは `counters:faceDetect` の加算と `faceDetectScenario` の起動だけを行う。
 
-サーバー側 (`wsServer.ts`) の処理:
+### サーバー → クライアント: `faceDetectBlockFromServer`
 
-1. `countersRedis.increment("faceDetect")` でカウンタ加算。
-2. `streamsRedis.getLength("PLAYBACK")` を確認。
-3. バッファが空なら `"no buffer"` 文字列を該当クライアントへ返して終了。
-4. それ以外は `[1, 24]` 時間からランダムに選んだオフセットで過去タイムスタンプを生成し、`streamEmit("PLAYBACK", id, timestamp)` で過去映像を再生。
-
----
-
-## 来訪フラグのタイマー仕様
-
-```
-時刻       イベント                      flag    timeoutId
-─────────────────────────────────────────────────────────
-T0        POST {direction:"left"}        true    setTimeout(T0+15m)
-T0+5m     POST {direction:"left"}        true    clearTimeout → setTimeout(T0+5m+15m)
-T0+5m+10m POST {direction:"left"}        true    clearTimeout → setTimeout(T0+5m+10m+15m)
-...                                                           (POSTが続けば flag は true のまま)
-
-T0+5m+10m+15m  タイマー満了              false   null
-                                         ↓
-                                broadcastClientSettings()
-                                         ↓
-                                 stopFaceDetection()
+```json
+{
+  "type": "faceDetectBlockFromServer",
+  "data": { "durationMs": 35000 }
+}
 ```
 
-- 15 分以内に再 POST があればタイマーが「最後の POST から 15 分」へリセットされる。
-- POST が来ない場合は最後の POST の 15 分後に `false` に戻る。
-- プロセス再起動時は `flag = false` で初期化される。
+- シナリオ開始時に全端末へブロードキャストする。
+- フロントは `durationMs` の間、顔検出を停止する。
+
+### 廃止されたイベント
+
+- `personDetectFromServer`: 旧 `/api/persondetect` のフリッカー演出用。送信元の削除に伴い、フロントのハンドラも削除済み。
 
 ---
 
-## 起動・停止のシナリオ例
+## 既知の挙動・制約
 
-### シナリオ A: 初回 POST → 顔認識開始
-
-1. `/api/persondetect {direction:"left"}` 受信
-2. `personDetectState.flag` が `false → true`
-3. `broadcastClientSettings()` で全クライアントに送信
-4. `c.facedetection === true` のクライアントは `initFaceDetection()` を実行
-5. `c.facedetection === false` のクライアントは `stopFaceDetection()` を実行（既に停止状態なら no-op）
-
-### シナリオ B: 15 分間 POST が来ず → 顔認識停止
-
-1. タイマー満了で `flag = false`
-2. `broadcastClientSettings()` で全クライアントに `facedetection: false` を送信
-3. 全クライアントが `stopFaceDetection()` を実行
-
-### シナリオ C: 接続中に POST → 該当クライアントだけ起動
-
-1. `flag === true` の最中にクライアントが新規接続
-2. `connectFromClient` 内で `emitClientSettings(id)` が呼ばれ、その時点の有効値が送られる
-3. `c.facedetection && flag` が真なら接続直後から顔認識が開始される
+- **個人識別はしない**: 顔認証・顔照合は行わない。検出するのは bbox とランドマークのみ。
+- **bbox は未使用**: `faceDetectFromClient` の `x / width / height` はサーバーでログに出すだけ。
+- **検出は最初の顔だけ**: 複数人の場合、2人目以降は正面判定に使わない。
+- **正面判定はヨーのみ**: ピッチ・ロールは考慮しない。
+- **約35秒で再発火し得る**: ブロック中に `wasFrontal` を `false` に戻すため、同じ人が正面に立ったままだと、ブロック解除後に再度 `faceDetectFromClient` が送られる。
+- **サーバー側の同時実行ガードはない**: `faceDetectScenario` に実行中フラグはなく、`recordEmit` の `currentState.RECORD` ガードもコメントアウトされている。複数端末が同時に検出するとシナリオが重複し得る。
+- **ブロック通知は recent 検索後**: `checkRecentBuffer()` の完了を待ってから `faceDetectBlockFromServer` を送る。
+- **検出ループは例外を捕捉していない**: `detectAllFaces()` が reject するとループが止まり、`active` が `true` のまま残る。
+- **表情推論の結果は未使用**: `withFaceExpressions()` は毎回推論を実行するが、結果はどこからも参照していない。`faceExpressionNet` のロードと推論は負荷対効果が悪い。
+- **座標系**: ランドマークはウィンドウ座標にリサイズされる。映像表示は `object-fit: contain` / `showImage` の contain なので、アスペクト比が違うと表示位置とずれる。
+- **`/1` `/2` は自動初期化しない**: `/webrtc` と違い、クリックか Enter で `initialize()` する必要がある。
+- **`availableBuffersState` は未使用**: `faceDetectScenario.ts` で更新されるが、参照されていない。
+- **`SNAPSHOT_DISPLAY_MS` は未使用**: バックエンド定数は残っているが、スナップショットはフロント単独で 1 秒表示する。
 
 ---
 
-## 関連ファイル一覧
-
-### バックエンド
-
-- `packages/backend/src/state/states/personDetectState.ts` — フラグ状態
-- `packages/backend/src/clientSetting/clientSettingsEmit.ts` — 送信・タイマー制御
-- `packages/backend/src/clientSetting/connectFromClient.ts` — 接続時の `client.facedetection` 決定
-- `packages/backend/src/socket/wsServer.ts` — 接続時送信、`faceDetectFromClient` 受信処理
-- `packages/backend/src/app.ts` — `/api/persondetect` ハンドラ
-- `packages/backend/static/models/` — face-api.js モデルファイル
+## 関連ファイル
 
 ### フロントエンド
 
-- `packages/frontend/src/faceApi/index.ts` — 顔検出ロジック本体
-- `packages/frontend/src/socket.ts` — `clientSettingsFromServer` ハンドラ
-- `packages/frontend/public/models/` — face-api.js モデルファイル
+- `packages/frontend/src/faceApi/index.ts` — 顔検出・正面判定・点滅・スナップショット
+- `packages/frontend/src/socket.ts` — `clientSettingsFromServer` / `faceDetectBlockFromServer` ハンドラ
+- `packages/frontend/src/main.ts` — WebSocket 接続と初期化
+- `packages/frontend/public/models/` — face-api.js モデル
 
----
+### バックエンド
 
-## 既知の挙動・留意点
-
-- `withFaceLandmarks(true).withFaceExpressions()` を呼んでいるが、**表情データは現状未使用**。ランドマークは描画のみ、サーバーへ送るのは bbox の `{x, width, height}` のみ。
-- `detection.box.y` は送信していない。縦位置が必要になったら追加する。
-- `personDetectState` は永続化しない。サーバー再起動直後は必ず `flag = false`。
-- 顔検出のサーバー送信には独立の **30 秒クールダウン** がある（`personDetectState` の 15 分タイマーとは別）。1 回の来訪で連続的に過去映像が再生されるのを防ぐための間引き。
-- `initFaceDetection()` は `active` フラグで二重起動を防止しているため、`clientSettingsFromServer` が再送されても安全。
-- `stopFaceDetection()` はオーバーレイ DOM とロード済みモデルを保持するため、再起動時のレイテンシは小さい。
+- `packages/backend/src/socket/wsServer.ts` — `faceDetectFromClient` 受信
+- `packages/backend/src/scenario/faceDetectScenario.ts` — シナリオ本体
+- `packages/backend/src/scenario/faceDetectScenario.json` — シナリオ定義
+- `packages/backend/src/clientSetting/connectFromClient.ts` — パスによる `facedetection` 決定
+- `packages/backend/src/clientSetting/clientSettingsEmit.ts` — 設定送信
+- `packages/backend/src/nightMode/nightMode.ts` — ナイトモードによる停止・復元
+- `packages/backend/src/nightMode/nightModeSchedule.ts` — ナイトモード自動スケジュール
+- `packages/backend/src/redis/streamsRedis.ts` — カウンタ・バッファ検索
+- `packages/backend/src/stream/recordEmit.ts` — PLAYBACK 録画要求
+- `packages/backend/static/models/` — 本番配信用モデル

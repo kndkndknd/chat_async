@@ -119,7 +119,7 @@ ws.send({ type: "connected", data: { id } })  ← クライアントに ID を�
 | `bufferRecFromClient` | `ArrayBuffer` | 録音WebMデータ受信（現状ログのみ） |
 | `bufferFromClient` | `ArrayBuffer` | `feedWebMChunk()` でweriftのWebRTCパイプラインに渡す |
 | `wholeReqFromClient` | `{ audio, video, source, bufferSize } \| undefined` | `receiveWholeReq()` でWHOLEストリーム処理 |
-| `faceDetectFromClient` | `{ x, width, height }` | 顔検出カウンタをインクリメント、PAYBACKバッファをタイムスタンプ検索して送信 |
+| `faceDetectFromClient` | `{ x, width, height }` | `counters:faceDetect` をインクリメントし、`faceDetectScenario()` を起動する。座標はログのみで未使用 |
 
 **切断処理:**
 ```
@@ -276,6 +276,8 @@ socketState.socket.on("connected", (data) => {
 |---|---|
 | `stringsFromServer` | キャンバスにテキストを表示 |
 | `erasePrintFromServer` | キャンバスのテキストを消去 |
+| `clientSettingsFromServer` | 顔検出・hanged の設定を適用 |
+| `faceDetectBlockFromServer` | 指定時間、顔検出をブロック |
 | `cmdFromServer` | BPM・ストリーム等のコマンドを適用 |
 | `stopFromServer` | 音声フェードアウト・停止 |
 | `chatReqFromServer` | 次のCHATバッファを要求 (`chatReq`) |
@@ -294,8 +296,7 @@ socketState.socket.on("connected", (data) => {
 | `bufferRecReqFromServer` | チャンク録画開始 |
 | `bufferFromServer` | WebM動画データを受信して再生 |
 | `wholeCmdFromServer` | WHOLEコマンド処理 |
-| `personDetectFromServer` | フリッカリング演出 |
-| `disconnect` | 1秒後に `connect()` で再接続 |
+| `disconnect` | 指数バックオフで再接続 |
 
 ---
 

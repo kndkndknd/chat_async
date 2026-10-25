@@ -86,7 +86,7 @@ redis.on("error", (err) => {
 | ストリームバッファ | `streams:<name>:buff` | list | `buffStateType` の JSON シリアライズを末尾追加 / 先頭取り出し |
 | ストリーム再生インデックス | `streams:<name>:index` | string (int) | 順次再生時の参照位置 |
 | チャットキュー | `chats` | list | CHAT 用バッファ FIFO |
-| カウンタ | `counters:<name>` | string (int) | `visitor` / `leave` / `faceDetect` などのインクリメンタル数値 |
+| カウンタ | `counters:<name>` | string (int) | `faceDetect` などのインクリメンタル数値 |
 
 既定で `streams:keys` に登録されるストリーム: `PLAYBACK`, `TIMELAPSE`, `INTERNET`, `EMPTY` (`streamsRedis.initDefaultKeys`)。
 `YESTERDAY` は scenarioItsuki の `runOnce` 内で `loadYesterdayPlayback` が `initKey` するため、Mongo に
@@ -122,7 +122,7 @@ redis.on("error", (err) => {
 | `state:sampleRateState` | `sampleRateState.ts` | sampleRate, randomrate*, randomraterange |
 | `state:webState` | `webState.ts` | flag / type / url (websocket URL) |
 
-`bpmState`, `clientState`, `ioState`, `personDetectState`, `webRtcServerState` は (`state/index.ts` から見ても) `createPersistedState` を経由しておらず in-memory のみで保持される。
+`bpmState`, `clientState`, `ioState`, `webRtcServerState` は (`state/index.ts` から見ても) `createPersistedState` を経由しておらず in-memory のみで保持される。
 
 ### 注意点
 - Proxy 経由でないと書き込み検知できないので、`createPersistedState` 戻り値の参照を経由して値を更新する必要がある。
@@ -227,9 +227,9 @@ CHAT ソースの `buffStateType` を `chats` キーの list に FIFO で保持�
 
 | 用途 | キー | 書き込み箇所 |
 |------|------|--------------|
-| 入場検知 | `counters:visitor` | `src/app.ts` `POST /api/persondetect` (direction=left) |
-| 退場検知 | `counters:leave` | `src/app.ts` `POST /api/persondetect` (direction=right) |
 | 顔検知 | `counters:faceDetect` | `src/socket/wsServer.ts` `case "faceDetectFromClient"` |
+
+`visitor` / `leave` は旧 `POST /api/persondetect` の廃止に伴い、現在は書き込まれない。
 
 読み出し API (`get`) は存在するが現状コードベースから呼ばれていない (ログ用にインクリメント時の戻り値だけを出力)。
 
@@ -341,7 +341,7 @@ cmdLogging("START");
 
 ```
 packages/backend/src/
-├── app.ts                            ── 起動 (loadAllStates → initStreams) と POST /api/persondetect
+├── app.ts                            ── 起動 (loadAllStates → initStreams) と HTTP API
 ├── redis/
 │   ├── client.ts                     ── ioredis インスタンス
 │   ├── stateRedis.ts                 ── createPersistedState / loadAllStates / Proxy + debounce
@@ -366,7 +366,6 @@ packages/backend/src/
 │       ├── bpmState.ts               ── in-memory のみ
 │       ├── clientState.ts            ── in-memory のみ
 │       ├── ioState.ts                ── in-memory のみ (IoFacade)
-│       ├── personDetectState.ts      ── in-memory のみ
 │       └── webRtcServerState.ts      ── in-memory のみ
 ├── data/
 │   ├── index.ts                      ── streamsRedis / chatsRedis / initStreams を再エクスポート

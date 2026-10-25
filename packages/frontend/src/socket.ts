@@ -17,7 +17,7 @@ import {
   filterStateType,
   wholeCmdOption
 } from "../../../types";
-import { emojiState, erasePrint, textPrint, showImage, flickering } from "./canvasEvent";
+import { emojiState, erasePrint, textPrint, showImage } from "./canvasEvent";
 import { stopCmd, cmdFromServer } from "./cmd";
 import { quantizeFromServer } from "./quantize/quantizeFromServer";
 import { chatReq, recordReqFromServer, streamPlay } from "./stream";
@@ -385,10 +385,6 @@ export const socket = (): void => {
   // socketState.socket.on("answerFromServer", async (answer) => {
   //   await receiveAnswer(answer);
   // });
-
-  socketState.socket.on("personDetectFromServer", () => {
-    flickering();
-  });
 
   // faceDetectScenario 実行中〜終了後の一定時間、顔認識をブロックする。
   socketState.socket.on(
