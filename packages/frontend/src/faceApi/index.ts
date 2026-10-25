@@ -9,9 +9,10 @@ const FRONTAL_RATIO = 0.3;
 // 同じ正面範囲に連続で検出された回数がこの値に達したら、顔検出のトリガとする。
 const FRONTAL_CONFIRM_FRAMES = 2;
 
-// MacBook 内蔵カメラ（640x360）で 1.0〜1.5m 程度の距離にいる顔を対象にするための、
-// 顔幅の下限。640px * 0.08 = 約51px。実機のカメラ FOV に合わせて調整する。
-const MIN_FACE_WIDTH_RATIO = 0.08;
+// MacBook 内蔵カメラ（640x360）で 1.5m の距離にいる顔を対象にするための顔幅の下限。
+// photo.jpg（1.5m、16:9に中央クロップ）の TinyFaceDetector 実測値は約121px / 640px
+// （幅比 0.1886）。検出ゆらぎを考慮して少し低い値にしている。
+const MIN_FACE_WIDTH_RATIO = 0.185; // 640px * 0.185 = 約118px
 
 // 検出ループの間隔。短いほど顔認識の反応は速いが、TF.js/WebGL 推論が頻繁に走り
 // メインスレッド/GPU を専有するため、同居する WebRTC リレー映像の消去ペイント等が

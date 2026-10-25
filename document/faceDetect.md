@@ -171,9 +171,9 @@ if (faceWidthRatio >= MIN_FACE_WIDTH_RATIO) {
 }
 ```
 
-- `MIN_FACE_WIDTH_RATIO = 0.08`（640px 幅で約51px）。
-- MacBook 内蔵カメラ（640x360）で **1.0〜1.5m 程度**の距離にいる顔を想定した暫定値。
-- カメラの画角や設置環境で変わるため、実機で調整する前提。
+- `MIN_FACE_WIDTH_RATIO = 0.185`（640px 幅で約118px）。
+- `photo.jpg`（1.5m、1057x705）を 640x360 に中央クロップして TinyFaceDetector で測定したところ、顔幅は約121px・幅比 **0.1886** だった。この実測値から検出ゆらぎの余裕を少し見て `0.185` を下限にしている。
+- 1.5m 付近を境界に、それより近い顔を対象にする。
 - ウィンドウサイズの影響を受けないよう、`resizeResults` 後の座標ではなく元の `detections[0].detection.box` を使う。
 - 正面だがサイズが小さい場合はトリガせず、連続フレーム数もリセットする。
 
@@ -430,7 +430,7 @@ setTimeout(async () => {
 - **送信 bbox は未使用**: `faceDetectFromClient` の `x / width / height` はサーバーでログに出すだけ。サイズ判定はフロント側で `detections[0].detection.box` を使って行う。
 - **検出は最初の顔だけ**: 複数人の場合、2人目以降は正面判定に使わない。
 - **正面判定はヨーのみ**: ピッチ・ロールは考慮しない。
-- **サイズ閾値は暫定**: `MIN_FACE_WIDTH_RATIO = 0.08` は 640x360 の MacBook 内蔵カメラを想定した値。画角・設置位置・顔の大きさで変わるため、実機で調整する。
+- **サイズ閾値は実測ベース**: `MIN_FACE_WIDTH_RATIO = 0.185` は `photo.jpg`（1.5m、640x360に中央クロップ）の TinyFaceDetector 実測値 0.1886 を基にしている。照明・姿勢・個体差で変動するため、必要なら再調整する。
 - **約35秒で再発火し得る**: ブロック中に `frontalFrameCount` / `frontalTriggered` をリセットするため、同じ人が正面に立ったままだと、ブロック解除後に2フレーム連続の条件を満たして再度 `faceDetectFromClient` が送られる。
 - **トリガまで2フレームかかる**: 検出間隔は500ms + 推論時間なので、条件を満たしてから送信まで約1秒以上かかる。
 - **サーバー側の同時実行ガードはない**: `faceDetectScenario` に実行中フラグはなく、`recordEmit` の `currentState.RECORD` ガードもコメントアウトされている。複数端末が同時に検出するとシナリオが重複し得る。

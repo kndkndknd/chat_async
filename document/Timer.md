@@ -318,7 +318,7 @@
 | `INTERVAL_MS` | 1,500,000ms(25分) | scenarioItsuki.ts | シナリオ周期 |
 | `FRONTAL_RATIO` | 0.3 | faceApi/index.ts | 正面判定の許容範囲（±30%） |
 | `FRONTAL_CONFIRM_FRAMES` | 2 | faceApi/index.ts | 顔検出トリガに必要な連続フレーム数 |
-| `MIN_FACE_WIDTH_RATIO` | 0.08 | faceApi/index.ts | 顔幅の下限（640pxで約51px） |
+| `MIN_FACE_WIDTH_RATIO` | 0.185 | faceApi/index.ts | 顔幅の下限（640pxで約118px、1.5m実測ベース） |
 | `FACE_DETECT_BLOCK_AFTER_MS` | 20,000ms | faceDetectScenario.ts | 顔検出後ブロック加算 |
 | `SNAPSHOT_DISPLAY_MS` | 1,000ms | faceDetectScenario.ts | 未使用（スナップショットはフロント側で1秒） |
 | 絶対時刻上限 | 10,800,000ms(3時間) | splitTimerCmd.ts | スケジュール絶対/相対分岐 |
