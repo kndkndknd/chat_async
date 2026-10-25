@@ -3,18 +3,27 @@ import { canvasElement } from "../canvasEvent/canvasElement";
 import { socketState } from "../state";
 
 const MODEL_URL = "/models";
-// 顔の向きの許容範囲。鼻先が顔の中心からこの割合以内なら「正面に近い」とみなす（正面±40%）。
-const FRONTAL_RATIO = 0.4;
+// 顔の向きの許容範囲。鼻先が顔の中心からこの割合以内なら「正面に近い」とみなす（正面±30%）。
+const FRONTAL_RATIO = 0.3;
+
+// 同じ正面範囲に連続で検出された回数がこの値に達したら、顔検出のトリガとする。
+const FRONTAL_CONFIRM_FRAMES = 2;
+
+// MacBook 内蔵カメラ（640x360）で 1.0〜1.5m 程度の距離にいる顔を対象にするための、
+// 顔幅の下限。640px * 0.08 = 約51px。実機のカメラ FOV に合わせて調整する。
+const MIN_FACE_WIDTH_RATIO = 0.08;
 
 // 検出ループの間隔。短いほど顔認識の反応は速いが、TF.js/WebGL 推論が頻繁に走り
 // メインスレッド/GPU を専有するため、同居する WebRTC リレー映像の消去ペイント等が
-// 遅れる。/1,/2 端末の表示終了の即時性を上げるため間引いている（旧 100ms）。
-const DETECT_INTERVAL_MS = 250;
+// 遅れる。/1,/2 端末の表示終了の即時性を上げるため間引いている（旧 100ms → 250ms → 500ms）。
+const DETECT_INTERVAL_MS = 500;
 
 let overlayCanvas: HTMLCanvasElement | null = null;
 let active = false;
 let modelsLoaded = false;
-let wasFrontal = false;
+// 正面範囲に連続で検出されたフレーム数と、その連続中にトリガ済みかどうか。
+let frontalFrameCount = 0;
+let frontalTriggered = false;
 
 // 正面から外れているときにウィンドウ全体を白黒点滅させるためのオーバーレイ。
 let flashOverlay: HTMLDivElement | null = null;
@@ -148,7 +157,8 @@ export async function initFaceDetection(): Promise<void> {
 
 export function stopFaceDetection(): void {
   active = false;
-  wasFrontal = false;
+  frontalFrameCount = 0;
+  frontalTriggered = false;
   stopFlashing();
   hideCapturedFrame();
   if (overlayCanvas) {
@@ -166,7 +176,8 @@ async function detectLoop(): Promise<void> {
     const ctx = overlayCanvas.getContext("2d");
     ctx?.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
     stopFlashing();
-    wasFrontal = false;
+    frontalFrameCount = 0;
+    frontalTriggered = false;
     setTimeout(() => detectLoop(), DETECT_INTERVAL_MS);
     return;
   }
@@ -203,27 +214,42 @@ async function detectLoop(): Promise<void> {
       const halfFaceWidth = (rightJaw.x - leftJaw.x) / 2;
       const frontalOffset =
         halfFaceWidth > 0 ? (noseTip.x - faceCenterX) / halfFaceWidth : 1;
+      // 距離判定はウィンドウサイズに依存しないよう、映像の元解像度で正規化する。
+      const faceWidthRatio =
+        detections[0].detection.box.width / video.videoWidth;
 
       if (Math.abs(frontalOffset) <= FRONTAL_RATIO) {
-        if (!wasFrontal) {
-          socketState.socket?.emit("faceDetectFromClient", { x, width, height });
-          // 顔認識成立の瞬間に、カメラ映像を1フレームだけ1秒間表示する。
-          showCapturedFrame();
-          // faceDetectScenario が始まるので、90秒間は点滅を無効化する。
-          flashDisabledUntil = Date.now() + FLASH_DISABLE_MS;
-        }
-        wasFrontal = true;
         stopFlashing();
+        if (faceWidthRatio >= MIN_FACE_WIDTH_RATIO) {
+          frontalFrameCount++;
+          // 正面かつサイズ条件を2フレーム連続で満たしたらトリガする。
+          if (frontalFrameCount >= FRONTAL_CONFIRM_FRAMES && !frontalTriggered) {
+            socketState.socket?.emit("faceDetectFromClient", { x, width, height });
+            // 顔認識成立の瞬間に、カメラ映像を1フレームだけ1秒間表示する。
+            showCapturedFrame();
+            // faceDetectScenario が始まるので、90秒間は点滅を無効化する。
+            flashDisabledUntil = Date.now() + FLASH_DISABLE_MS;
+            frontalTriggered = true;
+          }
+        } else {
+          // 正面でも小さすぎる場合はトリガせず、連続カウントをリセットする。
+          frontalFrameCount = 0;
+          frontalTriggered = false;
+        }
       } else {
-        wasFrontal = false;
-        // 正面から外れている（オフセットが±0.4超）ので白黒点滅させる。
+        frontalFrameCount = 0;
+        frontalTriggered = false;
+        // 正面から外れている（オフセットが±0.3超）ので白黒点滅させる。
         startFlashing();
       }
     } else {
-      wasFrontal = false;
+      frontalFrameCount = 0;
+      frontalTriggered = false;
       stopFlashing();
     }
   } else {
+    frontalFrameCount = 0;
+    frontalTriggered = false;
     stopFlashing();
   }
 

@@ -217,13 +217,13 @@
 
 ### 10.1 顔検出ループ
 - **ファイル**: `frontend/src/faceApi/index.ts`
-- **値**: 250ms + 推論時間（再帰 `setTimeout`）
-- **動作**: `detectAllFaces()` を250msごとに実行。正面顔の false→true 立ち上がりで `faceDetectFromClient` emit。`blockFaceDetection(durationMs)` のブロック期間中は抑止。
+- **値**: 500ms + 推論時間（再帰 `setTimeout`）
+- **動作**: `detectAllFaces()` を500msごとに実行。正面範囲かつ顔幅が `MIN_FACE_WIDTH_RATIO` 以上の状態を2フレーム連続で満たしたら `faceDetectFromClient` emit。`blockFaceDetection(durationMs)` のブロック期間中は抑止。
 
 ### 10.2 非正面フラッシュ（1Hz 点滅）
 - **ファイル**: `frontend/src/faceApi/index.ts`
 - **値**: 500ms インターバル（1秒周期）
-- **契機**: `Math.abs(frontalOffset) > FRONTAL_RATIO`（0.4）
+- **契機**: `Math.abs(frontalOffset) > FRONTAL_RATIO`（0.3）
 - **動作**: 500msごとに `flashWhite` トグルで背景白/黒。`stopFlashing()` で `clearInterval`。検出成立後の90秒間は `flashDisabledUntil` により無効。
 
 ### 10.3 スナップショット表示
@@ -316,6 +316,9 @@
 | 定数 / 値 | 値 | ファイル | 用途 |
 |---|---|---|---|
 | `INTERVAL_MS` | 1,500,000ms(25分) | scenarioItsuki.ts | シナリオ周期 |
+| `FRONTAL_RATIO` | 0.3 | faceApi/index.ts | 正面判定の許容範囲（±30%） |
+| `FRONTAL_CONFIRM_FRAMES` | 2 | faceApi/index.ts | 顔検出トリガに必要な連続フレーム数 |
+| `MIN_FACE_WIDTH_RATIO` | 0.08 | faceApi/index.ts | 顔幅の下限（640pxで約51px） |
 | `FACE_DETECT_BLOCK_AFTER_MS` | 20,000ms | faceDetectScenario.ts | 顔検出後ブロック加算 |
 | `SNAPSHOT_DISPLAY_MS` | 1,000ms | faceDetectScenario.ts | 未使用（スナップショットはフロント側で1秒） |
 | 絶対時刻上限 | 10,800,000ms(3時間) | splitTimerCmd.ts | スケジュール絶対/相対分岐 |
@@ -335,7 +338,7 @@
 | タイムラプス周期 | 60,000ms | initialize.ts | チャンク録音 |
 | タイムラプスGET | 5,000ms | socket.ts | 手動取得 |
 | バッファ録画リトライ | 250ms ×40 | socket.ts | ストリーム初期化待ち |
-| 顔検出ループ | 250ms | faceApi/index.ts | フレーム間隔（+推論時間） |
+| 顔検出ループ | 500ms | faceApi/index.ts | フレーム間隔（+推論時間） |
 | フラッシュ点滅 | 500ms | faceApi/index.ts | 非正面1Hz |
 | `SNAPSHOT_DURATION_MS` | 1,000ms | faceApi/index.ts | スナップ表示 |
 | テキスト消去 | 500ms | textEvent.ts | 自動消去 |
@@ -349,7 +352,7 @@
 ## 14. 設計パターンの要点
 
 1. **指数バックオフ**: WebSocket（フロント）と WebRTC（バックエンド）はいずれも基準1秒×2^attempt・上限30秒。
-2. **周期実行**: シナリオ25分、センサ500ms、顔検出250ms など階層的な周期。
+2. **周期実行**: シナリオ25分、センサ500ms、顔検出500ms など階層的な周期。
 3. **グリッド/量子化**: 音楽系遅延はすべて BPM 由来またはグリッド整列（ヒューマナイズのためのランダムジッター含む）。
 4. **フロント/バック協調**: 顔検出ブロック(シナリオ長+20秒)などを socket イベントで同期。スナップショット(1秒)はフロント単独で処理する。
 5. **レート制限**: カウンター・クールダウン、録画要求リトライ、Mongo挿入間隔。

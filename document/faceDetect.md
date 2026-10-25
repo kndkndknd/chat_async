@@ -17,9 +17,9 @@
 
 face-api.js                                 wsServer.ts
   detectAllFaces()                            │
-  250ms + 推論時間ごと                         │
+  500ms + 推論時間ごと                         │
        │                                      │
-       │ 正面判定の false → true                │
+       │ 正面範囲 + サイズを2フレーム連続       │
        └── faceDetectFromClient {x,width,height} ──>│
                                                  ▼
                                        countersRedis.increment("faceDetect")
@@ -95,7 +95,7 @@ face-api.js                                 wsServer.ts
 
 ### モデル
 
-`MODEL_URL = "/models"` から以下を初回だけ並列ロードする（`:126-135`）。
+`MODEL_URL = "/models"` から以下を初回だけ並列ロードする（`:135-144`）。
 
 | モデル | 用途 |
 |---|---|
@@ -117,8 +117,8 @@ face-api.js                                 wsServer.ts
 
 ### `detectLoop()`
 
-- `setTimeout` による再帰ループ。間隔は **250ms + 推論時間**（`DETECT_INTERVAL_MS = 250`）。
-- 旧実装の 100ms から、WebRTC リレー映像への影響を減らすため 250ms に間引かれている。
+- `setTimeout` による再帰ループ。間隔は **500ms + 推論時間**（`DETECT_INTERVAL_MS = 500`）。
+- 旧実装の 100ms から、WebRTC リレー映像への影響を減らすため 250ms、さらに 500ms に間引かれている。
 - `video.readyState >= 2 && video.videoWidth > 0` のときだけ検出する。
 
 ```ts
@@ -139,7 +139,7 @@ const resized = faceapi.resizeResults(detections, {
 
 ### 正面判定
 
-68点ランドマークの以下を使う（`:195-206`）。
+68点ランドマークの以下を使う（`:209-219`）。
 
 - `positions[0]`: 左の顎輪郭
 - `positions[16]`: 右の顎輪郭
@@ -151,15 +151,35 @@ const halfFaceWidth = (rightJaw.x - leftJaw.x) / 2;
 const frontalOffset = (noseTip.x - faceCenterX) / halfFaceWidth;
 ```
 
-`Math.abs(frontalOffset) <= FRONTAL_RATIO`（0.4）なら正面とみなす。
+`Math.abs(frontalOffset) <= FRONTAL_RATIO`（0.3）なら正面とみなす。
 
-- 鼻先が顔の中心から半幅の 40% 以内、という判定。
+- 鼻先が顔の中心から半幅の 30% 以内、という判定。
 - 見ているのは左右方向（ヨー）だけ。上下（ピッチ）や傾き（ロール）は判定しない。
 - 複数人が映っている場合、2人目以降は正面判定の対象外。
+- さらに、同じ正面範囲に **2フレーム連続**で検出されることをトリガ条件にする（`FRONTAL_CONFIRM_FRAMES = 2`）。1フレーム目では送信せず、2フレーム目で送信する。
+
+### サイズ判定
+
+距離を判定するため、検出ボックスの幅を映像の元解像度で正規化する。
+
+```ts
+const faceWidthRatio =
+  detections[0].detection.box.width / video.videoWidth;
+
+if (faceWidthRatio >= MIN_FACE_WIDTH_RATIO) {
+  // 近距離の顔として扱う
+}
+```
+
+- `MIN_FACE_WIDTH_RATIO = 0.08`（640px 幅で約51px）。
+- MacBook 内蔵カメラ（640x360）で **1.0〜1.5m 程度**の距離にいる顔を想定した暫定値。
+- カメラの画角や設置環境で変わるため、実機で調整する前提。
+- ウィンドウサイズの影響を受けないよう、`resizeResults` 後の座標ではなく元の `detections[0].detection.box` を使う。
+- 正面だがサイズが小さい場合はトリガせず、連続フレーム数もリセットする。
 
 ### 検出成立時
 
-`wasFrontal` の **false → true の立ち上がり時だけ**、以下を実行する（`:207-216`）。
+「正面範囲」かつ「サイズ条件」を2フレーム連続で満たした時だけ、以下を実行する（`:221-240`）。
 
 1. `faceDetectFromClient` を `{ x, width, height }` 付きで送信
 2. カメラ映像を1フレームだけ静止画として全画面表示（1秒間）
@@ -176,17 +196,18 @@ const frontalOffset = (noseTip.x - faceCenterX) / halfFaceWidth;
 
 ### 非正面時の点滅
 
-正面から外れている間は、画面全体を白黒で点滅させる（`:217-221`）。
+正面から外れている間は、画面全体を白黒で点滅させる（`:241-246`）。
 
 - `#faceFlash` を `position:fixed; z-index:9999; pointer-events:none` で全画面に重ねる。
 - 500ms ごとに白/黒を切り替える（1秒周期）。
 - 顔が検出されなくなったら点滅を止める。
+- 正面だがサイズが小さい場合は点滅しない（点滅は正面判定のみを条件にする）。
 
 `flashDisabledUntil` は検出成立時に 90 秒後へ設定される。したがって、シナリオ起動後の 90 秒間は非正面でも点滅しない。
 
 ### スナップショット
 
-`showCapturedFrame()` が `canvasElement.video` の1フレームを `#faceSnapshot` に描画する（`:38-74`）。
+`showCapturedFrame()` が `canvasElement.video` の1フレームを `#faceSnapshot` に描画する（`:47-84`）。
 
 - `position:fixed; inset:0; z-index:9998; background:#000`
 - アスペクト比を保って画面中央に contain 配置
@@ -195,7 +216,7 @@ const frontalOffset = (noseTip.x - faceCenterX) / halfFaceWidth;
 
 ### ブロック
 
-`faceDetectBlockFromServer` を受けると `blockFaceDetection(durationMs)` が呼ばれ、`faceDetectBlockedUntil` まで検出処理をスキップする（`:86-93`, `:163-172`）。
+`faceDetectBlockFromServer` を受けると `blockFaceDetection(durationMs)` が呼ばれ、`faceDetectBlockedUntil` まで検出処理をスキップする（`:100-102`, `:175-181`）。
 
 ブロック中は:
 
@@ -203,12 +224,12 @@ const frontalOffset = (noseTip.x - faceCenterX) / halfFaceWidth;
 - `faceDetectFromClient` を送らない
 - オーバーレイをクリアする
 - 点滅を止める
-- `wasFrontal = false` に戻す
+- `frontalFrameCount = 0` / `frontalTriggered = false` に戻す
 
 ### `stopFaceDetection()`
 
 - `active = false` にしてループを止める
-- `wasFrontal = false`
+- `frontalFrameCount = 0` / `frontalTriggered = false`
 - 点滅を停止
 - スナップショットを非表示
 - オーバーレイをクリア
@@ -381,7 +402,7 @@ setTimeout(async () => {
 }
 ```
 
-- 正面判定の立ち上がり時だけ送信する。
+- 同じ正面範囲に2フレーム連続で検出された時だけ送信する。
 - `y` は送らない。
 - サーバーは `counters:faceDetect` の加算と `faceDetectScenario` の起動だけを行う。
 
@@ -406,10 +427,12 @@ setTimeout(async () => {
 ## 既知の挙動・制約
 
 - **個人識別はしない**: 顔認証・顔照合は行わない。検出するのは bbox とランドマークのみ。
-- **bbox は未使用**: `faceDetectFromClient` の `x / width / height` はサーバーでログに出すだけ。
+- **送信 bbox は未使用**: `faceDetectFromClient` の `x / width / height` はサーバーでログに出すだけ。サイズ判定はフロント側で `detections[0].detection.box` を使って行う。
 - **検出は最初の顔だけ**: 複数人の場合、2人目以降は正面判定に使わない。
 - **正面判定はヨーのみ**: ピッチ・ロールは考慮しない。
-- **約35秒で再発火し得る**: ブロック中に `wasFrontal` を `false` に戻すため、同じ人が正面に立ったままだと、ブロック解除後に再度 `faceDetectFromClient` が送られる。
+- **サイズ閾値は暫定**: `MIN_FACE_WIDTH_RATIO = 0.08` は 640x360 の MacBook 内蔵カメラを想定した値。画角・設置位置・顔の大きさで変わるため、実機で調整する。
+- **約35秒で再発火し得る**: ブロック中に `frontalFrameCount` / `frontalTriggered` をリセットするため、同じ人が正面に立ったままだと、ブロック解除後に2フレーム連続の条件を満たして再度 `faceDetectFromClient` が送られる。
+- **トリガまで2フレームかかる**: 検出間隔は500ms + 推論時間なので、条件を満たしてから送信まで約1秒以上かかる。
 - **サーバー側の同時実行ガードはない**: `faceDetectScenario` に実行中フラグはなく、`recordEmit` の `currentState.RECORD` ガードもコメントアウトされている。複数端末が同時に検出するとシナリオが重複し得る。
 - **ブロック通知は recent 検索後**: `checkRecentBuffer()` の完了を待ってから `faceDetectBlockFromServer` を送る。
 - **検出ループは例外を捕捉していない**: `detectAllFaces()` が reject するとループが止まり、`active` が `true` のまま残る。
