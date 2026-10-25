@@ -75,44 +75,12 @@
 
 ## 4. バックエンド — WebRTC / メディアストリーミング
 
-### 4.1 chat_sync 再接続バックオフ（weriftClient）
-- **ファイル**: `backend/src/webRTC/weriftClient.ts`
-- **値**: 基準 1,000ms × 2^attempt、上限 30,000ms（指数バックオフ）
-- **契機**: WebSocket クローズ / 接続失敗
-- **動作**: `reconnectAttempt` を増やし `delay = min(1000 * 2^attempt, 30000)` 後に `connectToChatSync()`。`stopRequested` 時は再接続せず。接続成功で attempt リセット。
+2026-06 の WebRTC 移行（`1fc258a`）で backend の werift / ffmpeg / `cameraRotator` は撤去され、
+本節が扱っていたタイマー（再接続バックオフ、RTP 統計、PLI、`PI_POLL_INTERVAL_MS`、
+`REC_REQ_RETRY_INTERVAL_MS`、`ACTIVATE_DELAY_MS`）は**すべて存在しない**。
 
-### 4.2 送信側 RTP 統計ログ
-- **ファイル**: `backend/src/webRTC/weriftClient.ts`
-- **値**: 2,000ms インターバル
-- **契機**: ピア接続が "connected" 到達
-- **動作**: 2秒ごとに送信 RTP 統計（packets/bytes/SSRC）を収集・ログ。接続クローズ/失敗で `clearInterval`。
-
-### 4.3 キーフレーム要求（PLI）バースト + 周期
-- **ファイル**: `backend/src/webRTC/weriftClient.ts`
-- **値**:
-  - バースト: 500ms × 5回 = 計 2.5秒
-  - その後周期: 2,000ms
-- **契機**: リモートピアから映像トラック受信時
-- **動作**: 接続直後 500ms ごとに PLI を5回送信 → 以降 2秒周期で PLI 送信。新規デコーダ初期化のためキーフレーム生成を促す。
-  > 関連メモ: werift 送信側はキーフレームを自前生成できず、新規ピア参加時は MediaRecorder 再起動が必須（`webrtc-keyframe-copy-relay`）。
-
-### 4.4 カメラ送信元セレクタ（旧カメラローテーション）
-- **ファイル**: `backend/src/webRTC/cameraRotator.ts`
-- **重要**: 以前は 20 秒ごとに全クライアントを巡回していたが、**現在は巡回しない**。送信元を `urlPathName` に `"pi"` を含むクライアント（`/pi`、Raspberry Pi）に**一度だけ固定**する実装。`ROTATE_INTERVAL_MS` / フォールバックタイマー等は存在しない（`document/WebRTC.md` の「20秒ごとに切り替える」記述は旧仕様で古い）。
-- **実在する定数**:
-  | 定数 | 値 | 用途 |
-  |---|---|---|
-  | `PI_POLL_INTERVAL_MS` | 2,000ms | `/pi` クライアント探索周期 |
-  | `ACTIVATE_DELAY_MS` | 200ms | ffmpeg 再起動後 MediaRecorder 起動までの猶予 |
-  | `REC_REQ_RETRY_INTERVAL_MS` | 1,500ms | 録画要求リトライ周期 |
-  | `REC_REQ_RETRY_MAX` | 20回 | 録画要求リトライ上限 |
-- **動作（`startCameraRotation`）**:
-  1. ピア接続時フック `setOnPeerConnected(refreshCurrentSource)` を登録。
-  2. `/pi` を含む path のクライアントが既にいれば `switchTo(pi)` で**固定**し、`startRecReqRetry(pi)` を開始。巡回タイマーは張らない。
-  3. いなければ 2秒ごと（`piPollTimer`）に `findPiTarget()` で探索。見つかったら**その場で `clearInterval` し1回だけ切替**、以降探索しない。
-- **`switchTo`**: 旧 sender に `recorderSwitchStopFromServer` → `setActiveSourceClientId(null)`（過渡期チャンク遮断）→ `restartFfmpegSubprocess()` → `bufferRecReqFromServer` 送信 → **200ms 待機** → `setActiveSourceClientId(next)`。`rotating` フラグで多重防止。
-- **`startRecReqRetry`**: `bufferRecReqFromServer` を **1.5秒ごとに再送**。`getActiveChunkCount() > 0`（クライアント送出開始）、対象 ID 変更、または **20回到達**で停止。
-- **`refreshCurrentSource`**（イベント駆動・タイマーなし）: 新規ピア接続時に現送信元へ `switchTo` し直してキーフレーム付き EBML を流し直す（後発ピアの黒画面防止。werift は copy 中継でキーフレーム生成不可）。
+現行の WebRTC は `/webrtc` ブラウザ (SyncClient) が chat_sync へ直接接続する構成。
+再接続バックオフは `frontend/src/webRTC/syncClient.ts` にあり、`document/WebRTC.md` を参照。
 
 ---
 
@@ -263,11 +231,11 @@
 - **契機**: `recLatency` フラグ有効時
 - **動作**: 即再生後、バッファ長分待って次チャンクの `streamReqFromClient` を emit。
 
-### 11.5 バッファ録画要求リトライ（ストリーム初期化待ち）
-- **ファイル**: `frontend/src/socket.ts`
-- **値**: 250ms × 最大40回（計10秒）
-- **契機**: ストリーム準備前に `bufferRecReqFromServer` 受信
-- **動作**: `streamState.stream` の存在を再帰確認。40回（10秒）で諦めて警告。
+### 11.5 ストリーム準備待ち（SyncClient 起動）
+- **ファイル**: `frontend/src/webRTC/syncClient.ts`
+- **値**: 250ms × 最大40回（計10秒、`STREAM_WAIT_INTERVAL_MS` / `STREAM_WAIT_MAX`）
+- **契機**: `SyncClient.start()` 時に `streamState.stream` が未取得
+- **動作**: 250ms 間隔で `streamState.stream` を確認し、取得でき次第 WebRTC 接続を開始。40回（10秒）で諦めて警告。
 
 ---
 
@@ -322,13 +290,8 @@
 | `FACE_DETECT_BLOCK_AFTER_MS` | 20,000ms | faceDetectScenario.ts | 顔検出後ブロック加算 |
 | `SNAPSHOT_DISPLAY_MS` | 1,000ms | faceDetectScenario.ts | 未使用（スナップショットはフロント側で1秒） |
 | 絶対時刻上限 | 10,800,000ms(3時間) | splitTimerCmd.ts | スケジュール絶対/相対分岐 |
-| 再接続基準/上限 | 1,000 / 30,000ms | weriftClient.ts, SocketFacade.ts | 指数バックオフ |
+| 再接続基準/上限 | 1,000 / 30,000ms | SocketFacade.ts, syncClient.ts | 指数バックオフ |
 | 旧WS再接続 | 3,000ms | connectWebSocket.ts | 単純リトライ |
-| RTP統計 | 2,000ms | weriftClient.ts | 送信統計ログ |
-| PLIバースト/周期 | 500ms×5 / 2,000ms | weriftClient.ts | キーフレーム要求 |
-| `PI_POLL_INTERVAL_MS` | 2,000ms | cameraRotator.ts | /pi 探索（巡回なし・固定） |
-| `REC_REQ_RETRY_INTERVAL_MS` | 1,500ms ×20 | cameraRotator.ts | 録画要求リトライ |
-| `ACTIVATE_DELAY_MS` | 200ms | cameraRotator.ts | ffmpeg 再起動待機 |
 | `RECORD_TIMEOUT_MS` | 10,000ms | recordEmit.ts | 録音時間 |
 | BPMタップ窓 | 10,000ms | metronomeBpmSet.ts | タップ検出 |
 | `M5_FETCH_TIMEOUT_MS` | 5,000ms | m5Access.ts | M5 HTTP |
@@ -337,7 +300,7 @@
 | センサ初期化TO | 5,000ms | sensor/index.ts | devicemotion 待ち |
 | タイムラプス周期 | 60,000ms | initialize.ts | チャンク録音 |
 | タイムラプスGET | 5,000ms | socket.ts | 手動取得 |
-| バッファ録画リトライ | 250ms ×40 | socket.ts | ストリーム初期化待ち |
+| ストリーム準備待ち | 250ms ×40 | syncClient.ts | SyncClient 起動待ち |
 | 顔検出ループ | 500ms | faceApi/index.ts | フレーム間隔（+推論時間） |
 | フラッシュ点滅 | 500ms | faceApi/index.ts | 非正面1Hz |
 | `SNAPSHOT_DURATION_MS` | 1,000ms | faceApi/index.ts | スナップ表示 |

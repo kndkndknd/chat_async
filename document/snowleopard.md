@@ -183,17 +183,11 @@ export const initAudio = async (
 
 ## MediaRecorder の取り扱い
 
-旧 Safari では `MediaRecorder` 未実装。`initializeSnowleopard.ts` 末尾で:
+旧構成では `MediaRecorder` によるチャンク録画（`packages/frontend/src/recording/index.ts`）を行っていたが、
+WebRTC 移行（`1fc258a`）で撤去済み。現行コードに `MediaRecorder` は存在しない。
 
-```ts
-if (typeof MediaRecorder !== "undefined") {
-  startChunkedRecording(stream);
-} else {
-  console.warn("MediaRecorder is not supported in this browser");
-}
-```
-
-としており、未実装環境ではチャンク録画をスキップしてその他の機能 (chat / sensor / face / timelapse) は継続動作する。
+録画（`PLAYBACK`）は `chatScriptProcessor` が PCM 音声と canvas の JPEG を
+`workletBufferFromClient` で送る方式に統一されており、`MediaRecorder` の有無は動作に影響しない。
 
 ---
 
@@ -225,7 +219,7 @@ URL のパス判定 (`includes("noStream")` / `includes("face")` / `includes("pi
 
 ## 既知の制約 (Snow Leopard 環境)
 
-- `MediaRecorder` 不可 → チャンク録画スキップ
+- `MediaRecorder` 未実装だが、現行実装では使用しないため影響なし
 - `mediaDevices.enumerateDevices` 不可 → `pi` パスでのデバイス指定 (`mics[2].deviceId`) は無効、デフォルトデバイスのみ使用
 - `getSupportedConstraints` 不可 → torch (フラッシュライト) 機能は使えない
 - `import()` (動的 import) は Vite 側でバンドルされるが、対応していないブラウザでは fallback がない (要検証)

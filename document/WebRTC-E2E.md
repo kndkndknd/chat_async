@@ -3,8 +3,7 @@
 > 対象: WebRTC ピアを backend werift から `/webrtc` ブラウザ (SyncClient) へ移行した構成。
 > 関連実装: `packages/frontend/src/webRTC/syncClient.ts` / `syncConfig.ts`、`main.ts` の `/webrtc` 起動分岐。
 >
-> ⚠️ `document/WebRTC.md` は **旧 werift 構成**の記述で、本移行後は内容が古い（ffmpeg/werift/MSE
-> リレーは撤去済み）。アーキテクチャの正本は順次こちらへ移行する。
+> アーキテクチャの正本は `document/WebRTC.md`。旧 werift / ffmpeg / MSE リレーは撤去済み。
 
 ## 0. この E2E で確認すること
 
