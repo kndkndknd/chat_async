@@ -10,39 +10,9 @@
 
 ---
 
-## 1. バックエンド — 日次スケジューラ系
+## 1. バックエンド — スケジューラ系
 
-### 1.1 ナイトモード自動スケジューラ
-- **ファイル**: `backend/src/nightMode/nightModeSchedule.ts`
-- **インターバル**: 60,000ms（1分ごとに現在時刻を判定）
-- **時刻ウィンドウ**: 19:00 以降、または 11:00 より前（深夜をまたぐ夜間ウィンドウ）
-- **動作**:
-  - 毎分 `tickNightModeSchedule(new Date())` を実行。
-  - 夜間ウィンドウに「入った」境界で `enableNightMode()`、ウィンドウから「出た」境界で `disableNightMode()` を**1回だけ**発火（`scheduledNightOn` フラグで境界検出）。
-  - 起動時にすでに夜間ウィンドウ内なら即 `enableNightMode()`。
-  - tick 取りこぼしや再起動に強い設計（時刻の状態差分で判定するため）。
-- **起動/停止**: `startNightModeSchedule()` / `stopNightModeSchedule()`（後者で `clearInterval`）。
-
-### 1.2 ナイト（クワイエット）スケジューラ — 活動停止
-- **ファイル**: `backend/src/scenario/nightSchedule.ts`
-- **インターバル**: 60,000ms（1分ごと）
-- **クワイエット時間帯**: 11:00 より前、または 19:00 以降（**日曜は 18:00 以降**）
-  - `isQuietTime`: `h < 11 → true`、開始時刻は `day === 0 ? 18 : 19`。
-- **動作**:
-  - クワイエットに「入る」境界 `enterQuiet()`:
-    - `stopScenarioItsuki()`（シナリオ周期停止）
-    - 先頭クライアントへ `stopEmit()`（ストリーム停止）
-    - `timelapseFromServer { cmd: "FALSE" }` をブロードキャスト（タイムラプス無効化）
-    - `flushPlaybackAndTimelapse()` で DB へフラッシュ
-  - クワイエットから「出る」境界 `exitQuiet()`:
-    - `timelapseFromServer { cmd: "TRUE" }`（タイムラプス有効化）
-    - `scenarioItsuki()` 再開
-  - 状態は `nightScheduleState.quiet` で管理。
-- **起動**: `startNightSchedule()`。
-
-> 1.1 と 1.2 は別物。1.1 は表示系の「ナイトモード」、1.2 は「シナリオ・ストリーム・タイムラプスの活動停止」。時刻条件も異なる。
-
-### 1.3 シナリオ周期実行（scenarioItsuki）
+### 1.1 シナリオ周期実行（scenarioItsuki）
 - **ファイル**: `backend/src/scenario/scenarioItsuki.ts`
 - **インターバル**: 1,500,000ms（**25分**、`INTERVAL = 25` 分）
 - **動作**:
@@ -247,13 +217,13 @@
 
 ### 10.1 顔検出ループ
 - **ファイル**: `frontend/src/faceApi/index.ts`
-- **値**: 250ms + 推論時間（再帰 `setTimeout`）
-- **動作**: `detectAllFaces()` を250msごとに実行。正面顔の false→true 立ち上がりで `faceDetectFromClient` emit。`blockFaceDetection(durationMs)` のブロック期間中は抑止。
+- **値**: 500ms + 推論時間（再帰 `setTimeout`）
+- **動作**: `detectAllFaces()` を500msごとに実行。正面範囲かつ顔幅が `MIN_FACE_WIDTH_RATIO` 以上の状態を2フレーム連続で満たしたら `faceDetectFromClient` emit。`blockFaceDetection(durationMs)` のブロック期間中は抑止。
 
 ### 10.2 非正面フラッシュ（1Hz 点滅）
 - **ファイル**: `frontend/src/faceApi/index.ts`
 - **値**: 500ms インターバル（1秒周期）
-- **契機**: `Math.abs(frontalOffset) > FRONTAL_RATIO`（0.4）
+- **契機**: `Math.abs(frontalOffset) > FRONTAL_RATIO`（0.3）
 - **動作**: 500msごとに `flashWhite` トグルで背景白/黒。`stopFlashing()` で `clearInterval`。検出成立後の90秒間は `flashDisabledUntil` により無効。
 
 ### 10.3 スナップショット表示
@@ -345,9 +315,10 @@
 
 | 定数 / 値 | 値 | ファイル | 用途 |
 |---|---|---|---|
-| ナイトモード判定 | 60,000ms | nightModeSchedule.ts | 19:00 ON / 11:00 OFF |
-| クワイエット判定 | 60,000ms | nightSchedule.ts | <11時 or ≥19時(日曜18時) |
 | `INTERVAL_MS` | 1,500,000ms(25分) | scenarioItsuki.ts | シナリオ周期 |
+| `FRONTAL_RATIO` | 0.3 | faceApi/index.ts | 正面判定の許容範囲（±30%） |
+| `FRONTAL_CONFIRM_FRAMES` | 2 | faceApi/index.ts | 顔検出トリガに必要な連続フレーム数 |
+| `MIN_FACE_WIDTH_RATIO` | 0.08 | faceApi/index.ts | 顔幅の下限（640pxで約51px） |
 | `FACE_DETECT_BLOCK_AFTER_MS` | 20,000ms | faceDetectScenario.ts | 顔検出後ブロック加算 |
 | `SNAPSHOT_DISPLAY_MS` | 1,000ms | faceDetectScenario.ts | 未使用（スナップショットはフロント側で1秒） |
 | 絶対時刻上限 | 10,800,000ms(3時間) | splitTimerCmd.ts | スケジュール絶対/相対分岐 |
@@ -367,7 +338,7 @@
 | タイムラプス周期 | 60,000ms | initialize.ts | チャンク録音 |
 | タイムラプスGET | 5,000ms | socket.ts | 手動取得 |
 | バッファ録画リトライ | 250ms ×40 | socket.ts | ストリーム初期化待ち |
-| 顔検出ループ | 250ms | faceApi/index.ts | フレーム間隔（+推論時間） |
+| 顔検出ループ | 500ms | faceApi/index.ts | フレーム間隔（+推論時間） |
 | フラッシュ点滅 | 500ms | faceApi/index.ts | 非正面1Hz |
 | `SNAPSHOT_DURATION_MS` | 1,000ms | faceApi/index.ts | スナップ表示 |
 | テキスト消去 | 500ms | textEvent.ts | 自動消去 |
@@ -381,10 +352,9 @@
 ## 14. 設計パターンの要点
 
 1. **指数バックオフ**: WebSocket（フロント）と WebRTC（バックエンド）はいずれも基準1秒×2^attempt・上限30秒。
-2. **時刻ベース・スケジューラ**: ナイトモード(1.1)・クワイエット(1.2)は毎分 tick し、状態差分で境界を検出するため tick 取りこぼし・再起動に強い。
-3. **周期実行**: シナリオ25分、センサ500ms、顔検出250ms など階層的な周期。
-4. **グリッド/量子化**: 音楽系遅延はすべて BPM 由来またはグリッド整列（ヒューマナイズのためのランダムジッター含む）。
-5. **フロント/バック協調**: 顔検出ブロック(シナリオ長+20秒)などを socket イベントで同期。スナップショット(1秒)はフロント単独で処理する。
-6. **レート制限**: カウンター・クールダウン、録画要求リトライ、Mongo挿入間隔。
-7. **リトライと上限**: 録画要求(1.5秒×20)・バッファ録画(250ms×40)・/pi探索(2秒)+10分フォールバックなど、上限・諦め条件を必ず持つ。
-8. **録音タイムアウト**: サーバ側録音タイムアウト(10秒)で `currentState.RECORD` を戻す。現在の `faceDetectScenario` はこのフラグをガードに使っていない。
+2. **周期実行**: シナリオ25分、センサ500ms、顔検出500ms など階層的な周期。
+3. **グリッド/量子化**: 音楽系遅延はすべて BPM 由来またはグリッド整列（ヒューマナイズのためのランダムジッター含む）。
+4. **フロント/バック協調**: 顔検出ブロック(シナリオ長+20秒)などを socket イベントで同期。スナップショット(1秒)はフロント単独で処理する。
+5. **レート制限**: カウンター・クールダウン、録画要求リトライ、Mongo挿入間隔。
+6. **リトライと上限**: 録画要求(1.5秒×20)・バッファ録画(250ms×40)・/pi探索(2秒)+10分フォールバックなど、上限・諦め条件を必ず持つ。
+7. **録音タイムアウト**: サーバ側録音タイムアウト(10秒)で `currentState.RECORD` を戻す。現在の `faceDetectScenario` はこのフラグをガードに使っていない。

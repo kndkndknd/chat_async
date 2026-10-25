@@ -24,8 +24,7 @@ import { chatReq, recordReqFromServer, streamPlay } from "./stream";
 import { setGainUI } from "./ui/gainUI";
 import { wholeCmd } from "./cmd/wholeCmd";
 import { initFaceDetection, stopFaceDetection, blockFaceDetection } from "./faceApi";
-import { enableBlackMode, disableBlackMode, isBlackModeActive } from "./blackMode";
-import { muteMasterForNight, restoreMasterForNight } from "./nightAudio";
+import { enableBlackMode, isBlackModeActive } from "./blackMode";
 
 
 export const socket = (): void => {
@@ -45,21 +44,6 @@ export const socket = (): void => {
   // BLACK コマンド: 画面全体を真っ黒にする。解除は文字入力(main.ts keydown)で行う。
   socketState.socket.on("blackFromServer", () => {
     enableBlackMode();
-  });
-
-  // ナイトモード解除時: BLACK モードをサーバーから明示的に解除する。
-  socketState.socket.on("blackOffFromServer", () => {
-    disableBlackMode();
-  });
-
-  // ナイトモード移行時: masterGain と glitchGain を 0 にして消音する。
-  socketState.socket.on("masterMuteFromServer", () => {
-    muteMasterForNight();
-  });
-
-  // ナイトモード解除時: masterGain と glitchGain を移行前の値へ戻す。
-  socketState.socket.on("masterUnmuteFromServer", () => {
-    restoreMasterForNight();
   });
 
   socketState.socket.on(

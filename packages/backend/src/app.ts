@@ -17,7 +17,6 @@ import { cmdLogging } from "./logging/cmdLogging";
 import { initStreams } from "./data";
 import { loadAllStates, clientState, sampleRateState } from "./state";
 import { streamsRedis } from "./redis/streamsRedis";
-import { startNightSchedule } from "./scenario/nightSchedule";
 import { getMongoDb } from "./mongo/client";
 import {
   importStreamToMongo,
@@ -34,12 +33,6 @@ import {
   stopScenarioItsuki,
 } from "./scenario/scenarioItsuki";
 import { stopAllScenarioTimers } from "./scenario/execScenario";
-import {
-  enableNightMode,
-  disableNightMode,
-  isNightModeActive,
-} from "./nightMode/nightMode";
-import { startNightModeSchedule } from "./nightMode/nightModeSchedule";
 
 // import { cors } from "cors";
 // const corsOptions = {
@@ -47,7 +40,6 @@ import { startNightModeSchedule } from "./nightMode/nightModeSchedule";
 //   optionsSuccessStatus: 200,
 // };
 
-const scenarioMode = process.env.SCENARIO === "true";
 const port = process.env.LOCAL_SERVER_PORT || 8888;
 const app = Express();
 app.use(Express.json());
@@ -231,24 +223,6 @@ app.get("/api/buffer-count", async function (req, res) {
   }
 });
 
-// ナイトモードの ON/OFF を切り替える。
-// value:true で全端末の顔認識停止 + scenarioItsuki 停止 + 全端末 BLACK モード。
-// value:false でナイトモードを解除する（顔認識を元の設定に復元し、BLACK を解除）。
-app.post("/api/nightmode", function (req, res) {
-  try {
-    const value: boolean = req.body?.value === true;
-    if (value) {
-      enableNightMode();
-    } else {
-      disableNightMode();
-    }
-    res.json({ success: true, nightmode: isNightModeActive() });
-  } catch (error) {
-    console.log(error);
-    res.status(500).json({ success: false, message: "Something went wrong" });
-  }
-});
-
 // CLEAR BUFFER 相当の処理を HTTP から実行する。
 // body.stream を省略すると全ストリームのバッファをクリア（CHAT/EMPTY/KICK/SNARE/HAT は除外）、
 // 指定すると該当ストリームのバッファのみクリアする。
@@ -352,11 +326,3 @@ loadAllStates()
   .then(() => initStreams())
   .catch((err) => console.error("Redis init error:", err));
 cmdLogging("START");
-if(scenarioMode){
-  console.log("Scenario mode enabled");
-  startNightSchedule();
-} else {
-  console.log("Scenario mode disabled");
-}
-// 19:30 にナイトモード ON、10:30 に OFF を自動実行するタイマー。
-startNightModeSchedule();

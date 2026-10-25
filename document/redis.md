@@ -3,9 +3,8 @@
 バックエンド (`packages/backend`) における Redis (ioredis) を用いた永続化・キューイング実装の説明。
 ストリーム/チャットのバッファ、各種ステート、簡易カウンタを Redis 上に保持している。
 
-夜間の quiet モード遷移時には PLAYBACK / TIMELAPSE バッファを MongoDB に退避し、翌日の `scenarioItsuki`
-で「昨日の同時刻に近い録音」を Redis 上の `YESTERDAY` ストリームに復元する流れも実装されている
-(後述「MongoDB との連携」)。
+`scenarioItsuki` 起動時には、MongoDB の過去 PLAYBACK から「昨日の同時刻に近い録音」を Redis 上の
+`YESTERDAY` ストリームに復元する流れも実装されている (後述「MongoDB との連携」)。
 
 ---
 
@@ -37,8 +36,6 @@
 │   ┌──────────────────────────────────────────────────────┐    │
 │   │ mongo/                                                │    │
 │   │   client.ts          ── lazy MongoClient (singleton)  │    │
-│   │   flushStreams.ts    ── enterQuiet 時に PLAYBACK /    │    │
-│   │                          TIMELAPSE を Mongo へ退避    │    │
 │   │   loadYesterdayPlayback.ts ── runOnce 毎に Mongo から │    │
 │   │                          YESTERDAY を Redis に復元    │    │
 │   └──────────────────────────────────────────────────────┘    │
@@ -160,7 +157,7 @@ PLAYBACK バッファだけが持つ、`recordEmit` の呼び出し単位を識�
 - バックエンドの `workletBufferFromClient` は PLAYBACK 分岐で `index` が来たら `buffStateType.recordIndex`
   として `streamsRedis.push("PLAYBACK", ...)` に渡す。
 - 結果として「1 回の `recordEmit` = 1 個の `recordIndex` = それに紐づく PLAYBACK バッファ群」が成立し、
-  後段の MongoDB 退避 / `YESTERDAY` 復元で同一録音セッションを切り出すキーとして使う。
+  後段の MongoDB 取り込み / `YESTERDAY` 復元で同一録音セッションを切り出すキーとして使う。
 - `recordAsOtherEmit` (PLAYBACK 以外) には `recordIndex` を付与しない。
 
 ### 主な API
@@ -237,7 +234,8 @@ CHAT ソースの `buffStateType` を `chats` キーの list に FIFO で保持�
 
 ## MongoDB との連携 (`src/mongo/`)
 
-夜間 quiet 突入時の Redis → Mongo 退避と、`scenarioItsuki` 起動時の Mongo → Redis 復元を担う。
+`scenarioItsuki` 起動時の Mongo → Redis 復元と、HTTP API からの Redis → Mongo 取り込み
+(`src/mongo/redisToMongo.ts`) を担う。
 
 ### 接続 (`src/mongo/client.ts`)
 
@@ -253,22 +251,6 @@ export const getMongoDb = async (): Promise<Db> => { /* lazy connect */ };
 - DB 名は環境変数 `MONGO_DB` (既定 `itsuki`)。コレクション名はそのままストリーム名 (`PLAYBACK` / `TIMELAPSE` / ...)。
 - Docker 構成は `docker/docker-compose.yml` の `mongo` サービス (image `mongo:7.0`、ホストポート `27017`、
   bind mount `./mongo/mongo_data`) で起動。
-
-### enterQuiet 時の Mongo 退避 (`src/mongo/flushStreams.ts`)
-
-`src/scenario/nightSchedule.ts` の `enterQuiet()` が `flushPlaybackAndTimelapse()` を fire-and-forget で
-呼び出す。
-
-`flushStreamToMongo(name)`:
-1. `LRANGE streams:<name>:buff 0 -1` で生 JSON を全件取得。
-2. 各エントリの `audio` を `Buffer.from(b64, "base64")` に変換し、それ以外の `buffStateType` フィールド
-   (`source / video / bufferSize / duration / from / floating / filter / timestamp / recordIndex`) は
-   そのままドキュメント化。
-3. `db.collection(name).insertMany(docs)` で 1 レコード = 1 バッファとして挿入 (`audio` は BSON Binary)。
-4. 成功後に `streamsRedis.clear(name)` で Redis 側のバッファを空にする。
-
-`flushPlaybackAndTimelapse()` は `PLAYBACK` → `TIMELAPSE` の順で実行。片方が失敗してももう片方は実行する
-(個別 try/catch)。`enterQuiet` 自体はこの完了を待たず、エラーはログのみ。
 
 ### `YESTERDAY` 復元 (`src/mongo/loadYesterdayPlayback.ts`)
 
@@ -288,11 +270,11 @@ export const getMongoDb = async (): Promise<Db> => { /* lazy connect */ };
 `streams:YESTERDAY:buff` に展開され、`YESTERDAY` ストリームとして再生対象に使える状態になる。
 
 ### 注意点
-- Mongo 接続失敗は `getMongoDb()` の Promise reject で各呼び出し元の try/catch に伝搬する。`nightSchedule`
-  と `scenarioItsuki` 側はどちらもログのみで処理継続する。
+- Mongo 接続失敗は `getMongoDb()` の Promise reject で各呼び出し元の try/catch に伝搬する。`scenarioItsuki`
+  側はログのみで処理継続する。
 - `recordIndex` を持たない旧 PLAYBACK エントリ (本機能導入前のデータ) は `loadYesterdayPlayback` の
   「closest doc に recordIndex 無し」分岐で skip される。
-- `flushStreamToMongo` は `insertMany` を 1 回で行うため、バッファが極端に大きい場合はメモリ・BSON 上限
+- `insertMany` を 1 回で行うため、バッファが極端に大きい場合はメモリ・BSON 上限
   (16MB / ドキュメント、合計サイズに注意) に留意。長尺の音声は base64→Buffer なので Redis 側より約 25%
   ほど小さくなる (base64 の 1.33 倍が逆方向に効く)。
 
@@ -349,7 +331,6 @@ packages/backend/src/
 │   └── initRedis.ts                  ── REDIS CLEAR ハンドラ
 ├── mongo/
 │   ├── client.ts                     ── MongoClient シングルトン (lazy connect)
-│   ├── flushStreams.ts               ── enterQuiet 時 PLAYBACK / TIMELAPSE を Mongo へ退避
 │   └── loadYesterdayPlayback.ts      ── runOnce 毎に Mongo から YESTERDAY を Redis に復元
 ├── state/
 │   ├── index.ts                      ── 各 state を再エクスポート
@@ -385,7 +366,6 @@ packages/backend/src/
 │   │   └── uploadVideo.ts            ── PCM + 画像化した動画チャンクを pushBatch
 │   └── toPostgres/postStream.ts      ── streamsRedis から読み出し外部 PostgreSQL に POST
 ├── scenario/
-│   ├── nightSchedule.ts              ── enterQuiet で flushPlaybackAndTimelapse を起動
 │   └── scenarioItsuki.ts             ── runOnce 毎に loadYesterdayPlayback → loadScenario → execScenario
 ├── cmd/splitSpace/
 │   ├── index.ts                      ── CLEAR / REDIS CLEAR などの分岐
