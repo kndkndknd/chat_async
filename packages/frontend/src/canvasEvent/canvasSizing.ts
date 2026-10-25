@@ -13,6 +13,11 @@ export function canvasSizing(socket?: SocketFacade) {
   const bckcnvsElement = <HTMLCanvasElement>document.getElementById("bckcnvs");
   bckcnvsElement.setAttribute("height", height + "px");
   bckcnvsElement.setAttribute("width", width + "px");
+  const videoCanvasElement = document.getElementById("videoCanvas");
+  if (videoCanvasElement instanceof HTMLCanvasElement) {
+    videoCanvasElement.setAttribute("height", height + "px");
+    videoCanvasElement.setAttribute("width", width + "px");
+  }
   if (socket !== undefined) {
     socket.emit("connectFromClient", {
       clientMode: "client",

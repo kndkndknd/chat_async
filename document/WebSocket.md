@@ -116,10 +116,17 @@ ws.send({ type: "connected", data: { id } })  ← クライアントに ID を�
 | `chatFromClient` | `buffStateType` | `chatReceive()` でバッファをRedisにプッシュし、配信先に転送 |
 | `streamReqFromClient` | `string` (source名) | `streamEmit()` でストリームバッファを該当クライアントに送信 |
 | `workletBufferFromClient` | `{ video, audio: ArrayBuffer, source, bufferSize }` | `workletBufferFromClient()` でAudioWorkletバッファをRedisに保存 |
-| `bufferRecFromClient` | `ArrayBuffer` | 録音WebMデータ受信（現状ログのみ） |
-| `bufferFromClient` | `ArrayBuffer` | `feedWebMChunk()` でweriftのWebRTCパイプラインに渡す |
+| `videoRecStartFromClient` | なし | クライアント別の録画バッファを Redis で初期化 |
+| `videoBufferFromClient` | `ArrayBuffer` | WebM チャンクを `video:rec:<clientId>` に保存 |
+| `videoPlayReqFromClient` | なし | 保存済みチャンクを `videoBufferFromServer` で返し、最後に `videoPlayEndFromServer` を送信 |
 | `wholeReqFromClient` | `{ audio, video, source, bufferSize } \| undefined` | `receiveWholeReq()` でWHOLEストリーム処理 |
 | `faceDetectFromClient` | `{ x, width, height }` | `counters:faceDetect` をインクリメントし、`faceDetectScenario()` を起動する。座標はログのみで未使用 |
+
+> 旧構成の WebRTC メディア中継イベント（`bufferRecFromClient` / `bufferFromClient`）は、
+> backend の werift 撤去（2026-06）に伴い削除済み。
+>
+> 録画チャンクは backend の `videoRecRedis` が `video:rec:<clientId>` に Base64 で保存する
+> （TTL 1時間、最大120チャンク）。詳細は [videoBuffer.md](./videoBuffer.md) を参照。
 
 **切断処理:**
 ```
@@ -282,6 +289,10 @@ socketState.socket.on("connected", (data) => {
 | `stopFromServer` | 音声フェードアウト・停止 |
 | `chatReqFromServer` | 次のCHATバッファを要求 (`chatReq`) |
 | `recordReqFromServer` | 録音開始 |
+| `videoRecReqFromServer` | 15秒間の映像・音声録画を開始 |
+| `videoPlayReqFromServer` | 保存済み録画の再生を開始 |
+| `videoBufferFromServer` | 録画 WebM チャンクを受信して蓄積 |
+| `videoPlayEndFromServer` | 全チャンク受信完了。Blob を生成して再生 |
 | `chatFromServer` | 音声+映像チャンクを受信して再生 |
 | `streamFromServer` | CHAT以外のストリームを受信して再生 |
 | `workletBufferFromServer` | AudioWorkletバッファを受信して再生 |
@@ -293,10 +304,11 @@ socketState.socket.on("connected", (data) => {
 | `timelapseFromServer` | タイムラプスモード切替 |
 | `gpsFlagFromServer` | GPS取得フラグ切替 |
 | `accelarateFlagFromServer` | 加速度センサーフラグ切替 |
-| `bufferRecReqFromServer` | チャンク録画開始 |
-| `bufferFromServer` | WebM動画データを受信して再生 |
 | `wholeCmdFromServer` | WHOLEコマンド処理 |
 | `disconnect` | 指数バックオフで再接続 |
+
+> `bufferRecReqFromServer` / `bufferFromServer` は旧 MediaRecorder 中継の廃止に伴い削除済み。
+> 現行の映像通話は `/webrtc` の SyncClient が chat_sync と直接 WebRTC 接続する（`document/WebRTC.md`）。
 
 ---
 

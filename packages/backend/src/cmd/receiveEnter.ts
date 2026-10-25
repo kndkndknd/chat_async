@@ -163,6 +163,12 @@ export const receiveEnter = async (
     // 全端末の画面を真っ黒にする。解除はクライアント側で文字入力時に行う。
     console.log("BLACK");
     ioState?.io.emit("blackFromServer");
+  } else if (strings === "VIDEOPLAYREQ"){
+    console.log("VIDEOPLAYREQ");
+    ioState?.io.emit("videoPlayReqFromServer");
+  } else if (strings === "VIDEORECREQ") {
+    console.log("VIDEORECREQ");
+    ioState?.io.emit("videoRecReqFromServer");
   } else if (strings === "VOSK") {
     console.log("VOSK CALL");
     ioState?.io.emit("voskCallFromServer");

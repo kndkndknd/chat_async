@@ -11,6 +11,7 @@ import { ioState } from "../state/states/ioState";
 import { connectFromClient } from "../clientSetting/connectFromClient";
 import { emitClientSettings } from "../clientSetting/clientSettingsEmit";
 import { countersRedis } from "../redis/streamsRedis";
+import { videoRecRedis } from "../redis/videoRecRedis";
 import { faceDetectScenario } from "../scenario/faceDetectScenario";
 import { workletBufferFromClient } from "../stream/audioWorklet/workletBufferFromClient";
 import { receiveWholeReq } from "../stream/receiveWholeReq";
@@ -111,6 +112,25 @@ export const wsServer = (
             data as { video: string; audio: ArrayBuffer; source: string; bufferSize: number; index?: number }
           );
           break;
+
+        // ---- 映像バッファ録画 / 再生 ----
+        case "videoRecStartFromClient":
+          await videoRecRedis.start(id);
+          break;
+
+        case "videoBufferFromClient":
+          await videoRecRedis.push(id, data as ArrayBuffer);
+          break;
+
+        case "videoPlayReqFromClient": {
+          const chunks = await videoRecRedis.getAll(id);
+          console.log(`videoPlayReqFromClient: ${chunks.length} chunks`);
+          for (const chunk of chunks) {
+            facade.to(id).emit("videoBufferFromServer", chunk);
+          }
+          facade.to(id).emit("videoPlayEndFromServer");
+          break;
+        }
 
         case "gainFromClient":
           console.log("gainFromClient", data);

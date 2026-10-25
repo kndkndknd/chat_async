@@ -8,7 +8,6 @@ import {
   streamFlagState,
   streamState,
   timelapseState,
-  webRtcState,
   audioWorkletState,
 } from "./state";
 
@@ -25,7 +24,12 @@ import { setGainUI } from "./ui/gainUI";
 import { wholeCmd } from "./cmd/wholeCmd";
 import { initFaceDetection, stopFaceDetection, blockFaceDetection } from "./faceApi";
 import { enableBlackMode, isBlackModeActive } from "./blackMode";
-
+import {
+  videoBufferFromServer,
+  videoPlayEndFromServer,
+  videoPlayReqFromServer,
+} from "./videoBuffer/videoPlayReqFromServer";
+import { videoRecReqFromServer } from "./videoBuffer/videoRecReqFromServer";
 
 export const socket = (): void => {
   socketState.socket.on(
@@ -324,15 +328,20 @@ export const socket = (): void => {
   // 旧構成の MediaRecorder 中継 (bufferRecReqFromServer 等) / MSE 受信
   // (mediaChunkFromServer 等) はバックエンド werift の撤去に伴い廃止した。
 
-  socketState.socket.on("bufferFromServer", (data) => {
-    const uint8Array = new Uint8Array(data);
-    const blob = new Blob([uint8Array]);
-    const url = URL.createObjectURL(blob);
-    // videoElement.src = url;
-    webRtcState.videoPlayer.src = webRtcState.videoPlayer !== null ? url : null;
-    textPrint("buffer");
+  // videoPlayReq
+  socketState.socket.on("videoPlayReqFromServer", () => {
+    videoPlayReqFromServer();
   });
-
+  socketState.socket.on("videoBufferFromServer", (data: ArrayBuffer) => {
+    videoBufferFromServer(data);
+  });
+  socketState.socket.on("videoPlayEndFromServer", () => {
+    videoPlayEndFromServer();
+  });
+  // videoRecReq
+  socketState.socket.on("videoRecReqFromServer", () => {
+    videoRecReqFromServer();
+  });
   // whole
   socketState.socket.on("wholeCmdFromServer", (option: wholeCmdOption) => {
     wholeCmd(option);
